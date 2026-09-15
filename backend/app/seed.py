@@ -189,7 +189,7 @@ def seed_if_empty(db: Session) -> None:
         )
 
         user = User(
-            email="analyst@acme.test",
+            email="demo@finsecai.com",
             hashed_password=hash_password("demo"),
             tenant_id=tenant.id,
             role="analyst",
@@ -227,12 +227,12 @@ def seed_if_empty(db: Session) -> None:
 
     # Existing installations may contain the original malformed demo email
     # or the previous demo password. Repair the known demo analyst account.
-    seeded_email = "analyst@acme.test"
+    seeded_email = "demo@finsecai.com"
     malformed_email = r"[analyst@acme.test](mailto\:analyst@acme.test)"
 
     user = (
         db.query(User)
-        .filter(User.email.in_([seeded_email, malformed_email]))
+        .filter(User.email.in_([seeded_email, "analyst@acme.test", malformed_email]))
         .first()
     )
     if user:

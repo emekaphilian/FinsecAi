@@ -45,7 +45,7 @@ def _check_context(user: User, context: str, db: Session) -> None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
     if context == "demo":
         tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
-        if user.email != "analyst@acme.test" or tenant is None or tenant.tenant_type != TenantType.DEMO.value:
+        if user.email != "demo@finsecai.com" or tenant is None or tenant.tenant_type != TenantType.DEMO.value:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
 
 
