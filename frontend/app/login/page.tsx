@@ -9,7 +9,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isDemo = searchParams.get("demo") === "1";
-  const [email, setEmail] = useState("analyst@acme.test");
+  const [email, setEmail] = useState("demo@finsecai.com");
   const [password, setPassword] = useState("demo");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
