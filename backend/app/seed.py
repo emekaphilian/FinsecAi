@@ -1,9 +1,14 @@
+import csv
+from datetime import datetime
+from pathlib import Path
+
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password, verify_password
 from app.db.models import (
     EvidenceChunk,
     Incident,
+    IncidentDataset,
     Tenant,
     TenantConfiguration,
     TenantStatus,
@@ -13,6 +18,7 @@ from app.db.models import (
 )
 from app.services.evidence_ingestion import embed_evidence_chunks
 from app.core.config import settings
+from app.services.dataset_provenance import DEMO
 
 
 def ensure_evidence_seeded(db: Session) -> int:
@@ -112,54 +118,50 @@ _EVIDENCE_CORPUS = {
 
 
 def default_demo_incidents(tenant_id: str) -> list[Incident]:
-    """Build the repeatable incident set shown in the default demo workspace."""
-    return [
-        Incident(
-            tenant_id=tenant_id,
-            user_id="USER-0001",
-            amount=18250,
-            transaction_type="TRANSFER",
-            device_id="DEV-11",
-            risk_score=0.91,
-            anomaly_score=0.88,
-            confidence=0.87,
-            explanation="High-risk transfer with matching velocity anomaly and device mismatch.",
-            limitations="Synthetic routing context used for demo purposes.",
-            governance_flags="Suspicious geolocation mismatch",
-            mitre_techniques="T1102",
-            nist_controls="IR-1",
-        ),
-        Incident(
-            tenant_id=tenant_id,
-            user_id="USER-0002",
-            amount=4210,
-            transaction_type="WITHDRAWAL",
-            device_id="DEV-12",
-            risk_score=0.58,
-            anomaly_score=0.49,
-            confidence=0.64,
-            explanation="Moderate-risk activity with marginal anomaly score.",
-            limitations="Requires analyst review for confirmation.",
-            governance_flags="",
-            mitre_techniques="T1078",
-            nist_controls="PR.AC-1",
-        ),
-        Incident(
-            tenant_id=tenant_id,
-            user_id="USER-0003",
-            amount=980,
-            transaction_type="PAYMENT",
-            device_id="DEV-13",
-            risk_score=0.22,
-            anomaly_score=0.18,
-            confidence=0.74,
-            explanation="Low-risk payment with no unusual velocity pattern.",
-            limitations="No remediation needed.",
-            governance_flags="",
-            mitre_techniques="",
-            nist_controls="",
-        ),
-    ]
+    """Load the versioned 60-row demonstration fixture without losing source fields."""
+    fixture = Path(__file__).resolve().parent / "data" / "demo_finsecai_v1.csv"
+    incidents: list[Incident] = []
+    with fixture.open("r", encoding="utf-8-sig", newline="") as source_file:
+        for row in csv.DictReader(source_file):
+            timestamp = None
+            if row.get("timestamp"):
+                try:
+                    timestamp = datetime.fromisoformat(row["timestamp"])
+                except ValueError:
+                    pass
+            incidents.append(Incident(
+                tenant_id=tenant_id,
+                user_id=row["user_id"],
+                amount=float(row["amount"]),
+                transaction_type=row.get("transaction_type") or "TRANSFER",
+                device_id=row.get("device_id") or row.get("device_name") or "",
+                risk_score=float(row["risk_score"]),
+                anomaly_score=float(row["anomaly_score"]),
+                created_at=timestamp or datetime.utcnow(),
+                raw_payload=row,
+                dataset_source=DEMO,
+                dataset_id="FINSECAI_DEMO_V1",
+                dataset_name="FinSecAI Demonstration Dataset",
+                dataset_version="V1",
+                dataset_record_count=60,
+            ))
+    return incidents
+
+
+def ensure_demo_dataset_record(db: Session) -> IncidentDataset:
+    dataset = db.query(IncidentDataset).filter(IncidentDataset.id == "FINSECAI_DEMO_V1").first()
+    if dataset is None:
+        dataset = IncidentDataset(
+            id="FINSECAI_DEMO_V1",
+            source_type=DEMO,
+            name="FinSecAI Demonstration Dataset",
+            version="V1",
+            record_count=60,
+            synthetic=True,
+            original_filename="demo_finsecai_v1.csv",
+        )
+        db.add(dataset)
+    return dataset
 
 
 def seed_if_empty(db: Session) -> None:
@@ -213,6 +215,7 @@ def seed_if_empty(db: Session) -> None:
                 chunks.append(chunk)
         embed_evidence_chunks(db, chunks)
 
+        ensure_demo_dataset_record(db)
         db.add_all(default_demo_incidents(tenant.id))
         db.commit()
 

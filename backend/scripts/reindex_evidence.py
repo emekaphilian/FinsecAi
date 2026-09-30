@@ -11,19 +11,27 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
+
+# Support both `python scripts/reindex_evidence.py` and
+# `python -m scripts.reindex_evidence` when run from backend/.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.db.session import SessionLocal
 from app.db.models import EvidenceChunk
-from app.services.evidence_ingestion import embed_evidence_chunks
+from app.services.evidence_ingestion import _configured_embedding_model, embed_evidence_chunks
 from app.core.config import settings
 
 
 def _print_banner():
     print("=== FinSecAI: evidence re-index utility ===")
-    print("Cohere embed model:", settings.cohere_embed_model)
+    print("Embedding provider:", settings.embedding_provider)
+    print("Embedding model:", _configured_embedding_model())
 
 
 def _print_chunk(chunk: EvidenceChunk) -> None:
@@ -37,16 +45,24 @@ def _print_chunk(chunk: EvidenceChunk) -> None:
 
 
 def reindex(tenant_id: Optional[str], batch_size: int = 20) -> int:
+    target_model = _configured_embedding_model()
     session = SessionLocal()
     try:
-        # Build base candidate query: embedding IS NULL
-        base_q = session.query(EvidenceChunk.id).filter(EvidenceChunk.embedding.is_(None))
+        # Rebuild missing vectors and vectors tagged for a different provider
+        # model. Retrieval deliberately filters by embedding_model, so these
+        # rows would otherwise remain invisible or incomparable.
+        needs_reindex = or_(
+            EvidenceChunk.embedding.is_(None),
+            EvidenceChunk.embedding_model.is_(None),
+            EvidenceChunk.embedding_model != target_model,
+        )
+        base_q = session.query(EvidenceChunk.id).filter(needs_reindex)
         if tenant_id:
             base_q = base_q.filter(EvidenceChunk.tenant_id == tenant_id)
 
         ids = [row[0] for row in base_q.order_by(EvidenceChunk.id).all()]
         total_candidates = len(ids)
-        print(f"Found {total_candidates} candidate evidence rows (embedding IS NULL)")
+        print(f"Found {total_candidates} evidence rows to index for model {target_model}")
 
         success = 0
         failed = 0
@@ -78,7 +94,7 @@ def reindex(tenant_id: Optional[str], batch_size: int = 20) -> int:
                 # continue with next batch
 
         # remaining unembedded after attempts
-        rem_q = session.query(func.count(EvidenceChunk.id)).filter(EvidenceChunk.embedding.is_(None))
+        rem_q = session.query(func.count(EvidenceChunk.id)).filter(needs_reindex)
         if tenant_id:
             rem_q = rem_q.filter(EvidenceChunk.tenant_id == tenant_id)
         remaining = int(rem_q.scalar() or 0)

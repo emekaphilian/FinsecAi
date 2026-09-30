@@ -11,16 +11,18 @@ from app.core.authorization import (
 from app.db.models import AuditEvent, Incident, User
 from app.db.session import get_db
 from app.services import report_job_service, report_service
+from app.services.dataset_provenance import filter_to_active_source
+from app.services.report_provenance import add_data_provenance_page
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 def _require_persisted_analysis(incident: Incident) -> None:
     """Full investigation reports may only render persisted analysis."""
-    if not incident.analysis_json:
+    if not incident.analysis_json or not incident.analysis_json.get("data_provenance"):
         raise HTTPException(
             409,
-            "This incident has not been analyzed. Run investigation analysis before generating the full incident report.",
+            "This incident needs source-aware analysis. Run Analyze on the incident before generating the report.",
         )
 
 
@@ -30,14 +32,18 @@ def generate_report(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(REPORTS_GENERATE)),
 ):
-    incident = apply_tenant_scope(
+    incident_query = apply_tenant_scope(
         db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    )
+    if user.tenant_id:
+        incident_query = filter_to_active_source(incident_query, db, user.tenant_id)
+    incident = incident_query.first()
     if not incident:
         raise HTTPException(404, "Incident not found")
     _require_persisted_analysis(incident)
 
     path = report_service.generate_incident_pdf(incident)
+    add_data_provenance_page(path, incident)
     db.add(AuditEvent(
         actor_user_id=user.id,
         tenant_id=incident.tenant_id,
@@ -56,9 +62,12 @@ def create_report_job(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(REPORTS_GENERATE)),
 ):
-    incident = apply_tenant_scope(
+    incident_query = apply_tenant_scope(
         db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    )
+    if user.tenant_id:
+        incident_query = filter_to_active_source(incident_query, db, user.tenant_id)
+    incident = incident_query.first()
     if not incident:
         raise HTTPException(404, "Incident not found")
     _require_persisted_analysis(incident)

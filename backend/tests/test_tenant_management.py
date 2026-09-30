@@ -1,5 +1,5 @@
 from app.core.security import hash_password
-from app.db.models import AuditEvent, Tenant, User
+from app.db.models import AuditEvent, Tenant, TenantProvenance, User
 
 
 def add_user(db_session, email, role, tenant_id=None):
@@ -52,8 +52,14 @@ def test_only_owner_can_create_tenant(client, db_session):
 
 
 def test_tenant_idor_and_user_management_boundaries(client, db_session):
-    tenant_a = Tenant(name="Tenant A")
-    tenant_b = Tenant(name="Tenant B")
+    tenant_a = Tenant(
+        name="Tenant A",
+        provenance=TenantProvenance.LEGITIMATE_CUSTOMER.value,
+    )
+    tenant_b = Tenant(
+        name="Tenant B",
+        provenance=TenantProvenance.LEGITIMATE_CUSTOMER.value,
+    )
     db_session.add_all([tenant_a, tenant_b])
     db_session.flush()
     owner = add_user(db_session, "owner-boundary@test", "owner")
@@ -90,7 +96,10 @@ def test_tenant_idor_and_user_management_boundaries(client, db_session):
 
 
 def test_owner_lifecycle_changes_are_audited(client, db_session):
-    tenant = Tenant(name="Lifecycle Tenant")
+    tenant = Tenant(
+        name="Lifecycle Tenant",
+        provenance=TenantProvenance.LEGITIMATE_CUSTOMER.value,
+    )
     db_session.add(tenant)
     db_session.flush()
     owner = add_user(db_session, "lifecycle-owner@test", "owner")

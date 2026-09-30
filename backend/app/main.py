@@ -12,10 +12,12 @@ from app.db.session import (
     engine,
     _ensure_report_job_schema_compatibility,
     _ensure_sqlite_schema_compatibility,
+    _ensure_dataset_provenance_schema_compatibility,
     _ensure_user_credential_schema_compatibility,
 )
 from sqlalchemy import text
 from app.seed import ensure_evidence_seeded, ensure_owner_seeded, seed_if_empty
+from app.services.dataset_provenance import migrate_legacy_incident_provenance
 
 logger = logging.getLogger("finsecai.startup")
 
@@ -43,6 +45,7 @@ app.include_router(audit.router)
 @app.on_event("startup")
 def on_startup():
     _ensure_sqlite_schema_compatibility(engine)
+    _ensure_dataset_provenance_schema_compatibility(engine)
     _ensure_report_job_schema_compatibility(engine)
     _ensure_user_credential_schema_compatibility(engine)
     if engine.dialect.name == "postgresql":
@@ -52,6 +55,7 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        migrate_legacy_incident_provenance(db)
         if settings.seed_demo_data:
             seed_if_empty(db)
         elif db.query(User).count() == 0:

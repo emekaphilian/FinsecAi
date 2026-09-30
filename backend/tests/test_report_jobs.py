@@ -10,6 +10,15 @@ PERSISTED_ANALYSIS = {
     "executive_summary": "Persisted investigation summary.",
     "risk_assessment": {"score_contributions": {"risk_score": 0.9}},
     "governance": {"evidence_sufficiency": "INSUFFICIENT", "automated_decision": "NONE"},
+    "data_provenance": {
+        "source": "TENANT",
+        "source_label": "Tenant Dataset",
+        "dataset_id": "test-dataset-v1",
+        "dataset_name": "Test dataset",
+        "dataset_version": "1",
+        "records_analyzed": 1,
+        "synthetic": False,
+    },
 }
 
 
@@ -79,7 +88,7 @@ def test_full_report_requires_persisted_analysis(db_session, report_job_user):
     db_session.add(incident)
     db_session.commit()
 
-    with pytest.raises(HTTPException, match="Run investigation analysis") as exc:
+    with pytest.raises(HTTPException, match="source-aware analysis") as exc:
         _require_persisted_analysis(incident)
     assert exc.value.status_code == 409
 

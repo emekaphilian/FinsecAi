@@ -16,13 +16,17 @@ from app.db.models import Incident, ReportJob, Tenant, TenantProvenance, TenantS
 from app.db.session import get_db
 from app.schemas import AnalyticsSummary, EnterpriseSummary
 from app.services import evaluation_service
+from app.services.dataset_provenance import filter_to_active_source
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 def _tenant_incidents(db: Session, user: User, tenant_id: str | None = None) -> list[Incident]:
     context = resolve_tenant_context(db, user, tenant_id)
-    return apply_tenant_scope(db.query(Incident), Incident, user, context).all()
+    query = apply_tenant_scope(db.query(Incident), Incident, user, context)
+    if context.tenant_id:
+        query = filter_to_active_source(query, db, context.tenant_id)
+    return query.all()
 
 
 @router.get("/summary", response_model=AnalyticsSummary)

@@ -98,6 +98,11 @@ class Incident(Base):
     tenant_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("tenants.id"), nullable=True, index=True
     )
+    dataset_source: Mapped[str | None] = mapped_column(String, default="TENANT", nullable=True, index=True)
+    dataset_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    dataset_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    dataset_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    dataset_record_count: Mapped[int | None] = mapped_column(nullable=True)
 
     user_id: Mapped[str] = mapped_column(String)
     amount: Mapped[float] = mapped_column(Float)
@@ -133,6 +138,8 @@ class EvidenceChunk(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), index=True)
+    dataset_source: Mapped[str] = mapped_column(String, default="SHARED", index=True)
+    dataset_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     source: Mapped[str] = mapped_column(String)
     framework_id: Mapped[str] = mapped_column(String, default="")
     text: Mapped[str] = mapped_column(Text)
@@ -143,6 +150,22 @@ class EvidenceChunk(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)
     embedded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class IncidentDataset(Base):
+    """Immutable provenance record for a dataset used to create incidents."""
+
+    __tablename__ = "incident_datasets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String, default="1")
+    record_count: Mapped[int] = mapped_column(default=0)
+    synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
+    original_filename: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Feedback(Base):

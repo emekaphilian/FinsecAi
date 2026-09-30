@@ -5,6 +5,8 @@ from app.db.models import Incident, ReportJob
 from app.core.authorization import apply_tenant_scope
 from app.db.session import SessionLocal
 from app.services import report_service
+from app.services.dataset_provenance import filter_to_active_source
+from app.services.report_provenance import add_data_provenance_page
 
 
 def create_report_job(
@@ -47,6 +49,7 @@ def _run_report_job(job_id: str, tenant_id: str, incident_id: str) -> None:
             raise ValueError(f"Incident {incident_id} not found for tenant {tenant_id}")
 
         file_path = report_service.generate_incident_pdf(incident)
+        add_data_provenance_page(file_path, incident)
         job.file_path = file_path
         job.result_reference = file_path
         job.status = "completed"
@@ -82,4 +85,18 @@ def enqueue_report_generation(
 
 def get_job_for_user(db, job_id: str, user) -> ReportJob | None:
     query = db.query(ReportJob).filter(ReportJob.id == job_id)
-    return apply_tenant_scope(query, ReportJob, user).first()
+    query = apply_tenant_scope(query, ReportJob, user)
+    if user.tenant_id:
+        allowed_incidents = filter_to_active_source(
+            db.query(Incident.id).filter(Incident.tenant_id == user.tenant_id),
+            db,
+            user.tenant_id,
+        )
+        query = query.filter(ReportJob.incident_id.in_(allowed_incidents))
+    job = query.first()
+    if job is None or job.incident_id is None:
+        return job
+    incident = db.query(Incident).filter(Incident.id == job.incident_id).first()
+    if incident is None or not (incident.analysis_json or {}).get("data_provenance"):
+        return None
+    return job

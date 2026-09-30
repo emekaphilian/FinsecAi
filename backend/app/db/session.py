@@ -32,6 +32,11 @@ def _ensure_sqlite_schema_compatibility(engine) -> None:
                     "risk_score_source": "VARCHAR",
                     "anomaly_score_source": "VARCHAR",
                     "model_version": "VARCHAR",
+                    "dataset_source": "VARCHAR",
+                    "dataset_id": "VARCHAR",
+                    "dataset_name": "VARCHAR",
+                    "dataset_version": "VARCHAR",
+                    "dataset_record_count": "INTEGER",
                 }
                 for name, sql_type in additions.items():
                     if name not in columns:
@@ -42,6 +47,8 @@ def _ensure_sqlite_schema_compatibility(engine) -> None:
                     "metadata_json": "JSON",
                     "embedding_model": "VARCHAR",
                     "embedded_at": "DATETIME",
+                    "dataset_source": "VARCHAR NOT NULL DEFAULT 'SHARED'",
+                    "dataset_id": "VARCHAR",
                 }.items():
                     if name not in evidence_columns:
                         conn.execute(text(f"ALTER TABLE evidence_chunks ADD COLUMN {name} {sql_type}"))
@@ -111,6 +118,43 @@ def _ensure_sqlite_schema_compatibility(engine) -> None:
         # Best-effort compatibility guard. If the schema cannot be inspected,
         # startup should still continue and let the app serve the request.
         return
+
+
+def _ensure_dataset_provenance_schema_compatibility(engine) -> None:
+    """Add source columns to deployed databases before ORM queries use them."""
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = set(inspector.get_table_names())
+            for table, additions in {
+                "incidents": {
+                    "dataset_source": "VARCHAR",
+                    "dataset_id": "VARCHAR",
+                    "dataset_name": "VARCHAR",
+                    "dataset_version": "VARCHAR",
+                    "dataset_record_count": "INTEGER",
+                },
+                "evidence_chunks": {
+                    "dataset_source": "VARCHAR NOT NULL DEFAULT 'SHARED'",
+                    "dataset_id": "VARCHAR",
+                },
+            }.items():
+                if table not in table_names:
+                    continue
+                columns = {column["name"] for column in inspector.get_columns(table)}
+                for name, sql_type in additions.items():
+                    if name in columns:
+                        continue
+                    if engine.dialect.name == "postgresql":
+                        conn.execute(text(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {sql_type}"
+                        ))
+                    else:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+            conn.commit()
+    except Exception:
+        logger.exception("Dataset provenance schema migration failed")
+        raise
 
 
 def _ensure_report_job_schema_compatibility(engine) -> None:

@@ -18,7 +18,24 @@ def semantic_rag_available(db: Session) -> bool:
     return db.bind is not None and db.bind.dialect.name == "postgresql"
 
 
-def _fallback_evidence_rows(db: Session, tenant_id: str, top_k: int) -> list[dict[str, Any]]:
+def _dataset_filter(dataset_source: str | None, dataset_id: str | None):
+    if not dataset_source:
+        return None
+    from sqlalchemy import and_, or_
+
+    return or_(
+        and_(EvidenceChunk.dataset_source == "SHARED", EvidenceChunk.dataset_id.is_(None)),
+        and_(
+            EvidenceChunk.dataset_source == dataset_source,
+            or_(EvidenceChunk.dataset_id.is_(None), EvidenceChunk.dataset_id == dataset_id),
+        ),
+    )
+
+
+def _fallback_evidence_rows(
+    db: Session, tenant_id: str, top_k: int,
+    dataset_source: str | None = None, dataset_id: str | None = None,
+) -> list[dict[str, Any]]:
     # Deterministic, tenant-scoped fallback for non-Postgres environments.
     # Return the most recent evidence chunks for the tenant without any
     # fabricated semantic similarity values. This is safe and preserves
@@ -28,9 +45,13 @@ def _fallback_evidence_rows(db: Session, tenant_id: str, top_k: int) -> list[dic
     logger.info("Semantic RAG not available for tenant %s; returning deterministic fallback rows", tenant_id)
 
     try:
+        filters = [EvidenceChunk.tenant_id == tenant_id]
+        dataset_filter = _dataset_filter(dataset_source, dataset_id)
+        if dataset_filter is not None:
+            filters.append(dataset_filter)
         rows = (
             db.query(EvidenceChunk)
-            .filter(EvidenceChunk.tenant_id == tenant_id)
+            .filter(*filters)
             .order_by(EvidenceChunk.embedded_at.desc().nullslast())
             .limit(top_k)
             .all()
@@ -49,6 +70,8 @@ def _fallback_evidence_rows(db: Session, tenant_id: str, top_k: int) -> list[dic
             "metadata": {
                 **(chunk.metadata_json or {}),
                 "tenant_id": tenant_id,
+                "dataset_source": getattr(chunk, "dataset_source", None),
+                "dataset_id": getattr(chunk, "dataset_id", None),
                 "retrieval_method": "disabled_non_postgres",
                 "semantic_rag_available": False,
                 "similarity_score": None,
@@ -68,6 +91,8 @@ def retrieve_relevant_evidence(
     top_k: int = 5,
     similarity_threshold: float | None = None,
     embedding_service: EmbeddingProvider | None = None,
+    dataset_source: str | None = None,
+    dataset_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve semantic evidence with tenant isolation enforced in SQL.
 
@@ -82,7 +107,7 @@ def retrieve_relevant_evidence(
     if not semantic_rag_available(db):
         # Semantic retrieval unavailable (non-Postgres). Fail closed.
         logger.warning("Semantic RAG unavailable (non-Postgres); tenant=%s", tenant_id)
-        return _fallback_evidence_rows(db, tenant_id, top_k)
+        return _fallback_evidence_rows(db, tenant_id, top_k, dataset_source, dataset_id)
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError("similarity_threshold must be between 0 and 1")
 
@@ -105,6 +130,9 @@ def retrieve_relevant_evidence(
             EvidenceChunk.tenant_id == tenant_id,
             EvidenceChunk.embedding.is_not(None),
         ]
+        dataset_filter = _dataset_filter(dataset_source, dataset_id)
+        if dataset_filter is not None:
+            base_filters.append(dataset_filter)
 
         model_column = getattr(EvidenceChunk, "embedding_model", None)
         model_name = getattr(service, "model_name", None)
@@ -157,6 +185,8 @@ def retrieve_relevant_evidence(
             "metadata": {
                 **(chunk.metadata_json or {}),
                 "tenant_id": tenant_id,
+                "dataset_source": getattr(chunk, "dataset_source", None),
+                "dataset_id": getattr(chunk, "dataset_id", None),
                 "retrieval_method": f"semantic_pgvector:{getattr(service, 'provider_name', 'configured')}",
                 "semantic_rag_available": True,
                 "similarity_score": round(1.0 - float(value), 6),

@@ -1,6 +1,7 @@
 import io
 import logging
 import math
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -8,6 +9,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.core.authorization import (
     INCIDENTS_INVESTIGATE,
@@ -26,6 +28,7 @@ from app.db.models import (
     EvidenceChunk,
     Feedback,
     Incident,
+    IncidentDataset,
     MLPredictionAudit,
     ModelVersion,
     ReportJob,
@@ -41,7 +44,11 @@ from app.schemas import FeedbackIn, IncidentOut
 from app.services import intelligence_service
 from app.services.evidence_ingestion import embed_evidence_chunks
 from app.services.upload_normalization import normalize_upload_dataframe
-from app.seed import default_demo_incidents
+from app.seed import default_demo_incidents, ensure_demo_dataset_record
+from app.services.dataset_provenance import (
+    DEMO, USER_TEST, TENANT as TENANT_DATASET, SHARED,
+    filter_to_active_source,
+)
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
@@ -66,6 +73,7 @@ class IngestEvidenceIn(BaseModel):
     source: str
     framework_id: str = Field(default="")
     text: str
+    dataset_id: str | None = None
 
 
 class EvidenceOut(BaseModel):
@@ -99,10 +107,22 @@ def _set_demo_data_mode(db: Session, tenant_id: str, mode: str) -> None:
     config.configuration = configuration
 
 
+def _incident_for_active_workspace(db: Session, incident_id: str, user: User) -> Incident | None:
+    query = apply_tenant_scope(
+        db.query(Incident).filter(Incident.id == incident_id), Incident, user
+    )
+    if user.tenant_id:
+        query = filter_to_active_source(query, db, user.tenant_id)
+    return query.first()
+
+
 def _clear_demo_incident_data(db: Session, tenant_id: str) -> int:
     """Remove replaceable demo records and their dependent workflow artefacts."""
     incident_ids = [
-        incident_id for (incident_id,) in db.query(Incident.id).filter(Incident.tenant_id == tenant_id).all()
+        incident_id for (incident_id,) in db.query(Incident.id).filter(
+            Incident.tenant_id == tenant_id,
+            Incident.dataset_source.in_([DEMO, USER_TEST]),
+        ).all()
     ]
     if not incident_ids:
         return 0
@@ -111,7 +131,10 @@ def _clear_demo_incident_data(db: Session, tenant_id: str) -> int:
     db.query(MLPredictionAudit).filter(MLPredictionAudit.incident_id.in_(incident_ids)).delete(synchronize_session=False)
     db.query(Feedback).filter(Feedback.incident_id.in_(incident_ids)).delete(synchronize_session=False)
     db.query(ReportJob).filter(ReportJob.incident_id.in_(incident_ids)).delete(synchronize_session=False)
-    return db.query(Incident).filter(Incident.tenant_id == tenant_id).delete(synchronize_session=False)
+    return db.query(Incident).filter(
+        Incident.tenant_id == tenant_id,
+        Incident.dataset_source.in_([DEMO, USER_TEST]),
+    ).delete(synchronize_session=False)
 
 
 @router.get("/data-mode")
@@ -155,9 +178,11 @@ def restore_demo_data(
     tenant = _demo_tenant_for_context(db, user, tenant_id)
     deleted = _clear_demo_incident_data(db, tenant.id)
     db.add_all(default_demo_incidents(tenant.id))
+    dataset = ensure_demo_dataset_record(db)
+    dataset.record_count = 60
     _set_demo_data_mode(db, tenant.id, "demo_default")
     db.commit()
-    return {"deleted": deleted, "restored": 3, "mode": "demo_default"}
+    return {"deleted": deleted, "restored": 60, "mode": "demo_default"}
 
 
 @router.get("", response_model=list[IncidentOut])
@@ -177,6 +202,8 @@ def list_incidents(
     )
     context = resolve_tenant_context(db, user, tenant_id)
     q = apply_tenant_scope(query, Incident, user, context)
+    if context.tenant_id:
+        q = filter_to_active_source(q, db, context.tenant_id)
     return q.offset(offset).limit(limit).all()
 
 
@@ -221,9 +248,13 @@ async def analyze_batch(
     db: Session = Depends(get_db), user: User = Depends(require_permission(INCIDENTS_INVESTIGATE))
 ):
     context = resolve_tenant_context(db, user, tenant_id)
-    incidents = apply_tenant_scope(
-        db.query(Incident).filter(Incident.analysis_json.is_(None)), Incident, user, context
-    ).all()
+    incidents = apply_tenant_scope(db.query(Incident), Incident, user, context)
+    if context.tenant_id:
+        incidents = filter_to_active_source(incidents, db, context.tenant_id)
+    incidents = [
+        incident for incident in incidents.all()
+        if not (incident.analysis_json or {}).get("data_provenance")
+    ]
     for incident in incidents:
         result = await intelligence_service.analyze(db, incident.tenant_id, incident)
         for key, value in result.items():
@@ -238,9 +269,7 @@ def get_mapping_explanation(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_READ)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
     analysis = incident.analysis_json or {}
@@ -270,9 +299,7 @@ def get_incident_evidence(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_READ)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
     return {"evidence": intelligence_service.retrieve_evidence(db, incident.tenant_id, incident)}
@@ -284,8 +311,25 @@ def ingest_evidence(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_INVESTIGATE)),
 ):
+    context = resolve_tenant_context(db, user)
+    dataset = None
+    if payload.dataset_id:
+        dataset_query = db.query(IncidentDataset).filter(IncidentDataset.id == payload.dataset_id)
+        if context.tenant_id:
+            dataset_query = dataset_query.filter(or_(
+                IncidentDataset.tenant_id == context.tenant_id,
+                IncidentDataset.tenant_id.is_(None),
+            ))
+        dataset = dataset_query.first()
+        if dataset is None:
+            raise HTTPException(404, "Dataset not found")
+    evidence_tenant_id = context.tenant_id or (dataset.tenant_id if dataset else None)
+    if not evidence_tenant_id:
+        raise HTTPException(400, "Select a tenant before adding evidence.")
     chunk = EvidenceChunk(
-        tenant_id=user.tenant_id,
+        tenant_id=evidence_tenant_id,
+        dataset_source=dataset.source_type if dataset else SHARED,
+        dataset_id=dataset.id if dataset else None,
         source=payload.source,
         framework_id=payload.framework_id,
         text=payload.text,
@@ -310,9 +354,7 @@ def get_prediction_audit(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_READ)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
     audit = (
@@ -347,9 +389,7 @@ def get_incident(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_READ)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
     return incident
@@ -478,13 +518,37 @@ async def upload_incidents(
     if context.is_global or not context.tenant_id:
         raise HTTPException(400, "A tenant_id is required when a platform owner uploads incidents.")
     target_tenant_id = context.tenant_id
+    target_tenant = db.query(Tenant).filter(Tenant.id == target_tenant_id).first()
+    dataset_source = (
+        USER_TEST
+        if target_tenant and target_tenant.tenant_type == TenantType.DEMO.value
+        else TENANT_DATASET
+    )
+    dataset_id = str(uuid.uuid4())
+    dataset_name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or "Uploaded dataset"
+    dataset = IncidentDataset(
+        id=dataset_id,
+        tenant_id=target_tenant_id,
+        source_type=dataset_source,
+        name=dataset_name,
+        version="1",
+        record_count=0,
+        synthetic=False,
+        original_filename=dataset_name,
+    )
+    db.add(dataset)
+    db.flush()
     transaction_history = TransactionHistory(db, target_tenant_id) if risk_model else None
     existing = {
         (i.user_id, round(i.amount, 2), round(i.risk_score, 3), round(i.anomaly_score, 3))
-        for i in db.query(Incident).filter(Incident.tenant_id == target_tenant_id).all()
+        for i in db.query(Incident).filter(
+            Incident.tenant_id == target_tenant_id,
+            Incident.dataset_source == dataset_source,
+        ).all()
     }
 
     created, skipped, invalid = 0, 0, 0
+    created_incidents: list[Incident] = []
     for _, row in normalized_df.iterrows():
         cleaned, reason = _validate_row(row, scores_supplied)
         if reason:
@@ -523,6 +587,11 @@ async def upload_incidents(
             transaction_type=transaction_type,
             device_id=device_id,
             raw_payload=row.get("_raw_row") or {},
+            dataset_source=dataset_source,
+            dataset_id=dataset_id,
+            dataset_name=dataset_name,
+            dataset_version="1",
+            dataset_record_count=0,
             normalization_metadata={
                 "column_map": column_map,
                 "normalized_columns": list(normalized_df.columns),
@@ -534,6 +603,7 @@ async def upload_incidents(
             ),
         )
         db.add(incident)
+        created_incidents.append(incident)
         if model_prediction is not None:
             db.flush()
             db.add(
@@ -550,12 +620,20 @@ async def upload_incidents(
             )
         existing.add(key)
         created += 1
+    dataset.record_count = created
+    for incident in created_incidents:
+        incident.dataset_record_count = created
+    if target_tenant and target_tenant.tenant_type == TenantType.DEMO.value:
+        _set_demo_data_mode(db, target_tenant_id, "user_data")
     db.commit()
     return {
         "created": created,
         "skipped_duplicates": skipped,
         "skipped_invalid": invalid,
         "scored_by_model": risk_model is not None,
+        "dataset_id": dataset_id,
+        "dataset_source": dataset_source,
+        "dataset_name": dataset_name,
     }
 
 
@@ -565,9 +643,7 @@ async def analyze_incident(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_INVESTIGATE)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
 
@@ -597,9 +673,7 @@ def submit_authoritative_label(
     user: User = Depends(require_permission(INCIDENTS_INVESTIGATE)),
 ):
     """Record the real ground truth for an incident, separate from analyst opinion."""
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
 
@@ -754,9 +828,7 @@ def submit_feedback(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(INCIDENTS_INVESTIGATE)),
 ):
-    incident = apply_tenant_scope(
-        db.query(Incident).filter(Incident.id == incident_id), Incident, user
-    ).first()
+    incident = _incident_for_active_workspace(db, incident_id, user)
     if not incident:
         raise HTTPException(404, "Incident not found")
 

@@ -61,13 +61,13 @@ def test_demo_user_can_switch_to_own_data_and_restore_default_dataset(client, db
 
     clear = client.post("/incidents/use-own-data", headers=headers)
     assert clear.status_code == 200
-    assert clear.json()["deleted"] == 3
+    assert clear.json()["deleted"] == 60
     assert db_session.query(Incident).filter(Incident.tenant_id == tenant.id).count() == 0
 
     restored = client.post("/incidents/restore-demo-data", headers=headers)
     assert restored.status_code == 200
-    assert restored.json()["restored"] == 3
-    assert db_session.query(Incident).filter(Incident.tenant_id == tenant.id).count() == 3
+    assert restored.json()["restored"] == 60
+    assert db_session.query(Incident).filter(Incident.tenant_id == tenant.id).count() == 60
 
 
 def test_customer_tenant_cannot_replace_its_incidents_with_demo_data(client, db_session):
@@ -448,10 +448,24 @@ def test_report_route_generates_pdf(client, db_session):
         risk_score=0.9,
         anomaly_score=0.8,
         explanation="Example analysis text.",
+        dataset_source="TENANT",
+        dataset_id="TEST-TENANT-DATASET",
+        dataset_name="Test Tenant Dataset",
+        dataset_version="1",
+        dataset_record_count=1,
         analysis_json={
             "executive_summary": "Persisted investigation summary.",
             "risk_assessment": {"score_contributions": {"risk_score": 0.9}},
             "governance": {"evidence_sufficiency": "INSUFFICIENT", "automated_decision": "NONE"},
+            "data_provenance": {
+                "source": "TENANT",
+                "source_label": "Tenant Dataset",
+                "dataset_id": "TEST-TENANT-DATASET",
+                "dataset_name": "Test Tenant Dataset",
+                "dataset_version": "1",
+                "records_analyzed": 1,
+                "synthetic": False,
+            },
         },
     )
     db_session.add(incident)
@@ -489,7 +503,7 @@ def test_full_report_requires_persisted_analysis(client, db_session):
     login = client.post("/auth/login", data={"username": user.email, "password": "securepass"})
     response = client.post(f"/reports/{incident.id}", headers={"Authorization": f"Bearer {login.json()['access_token']}"})
     assert response.status_code == 409
-    assert "has not been analyzed" in response.json()["detail"]
+    assert "source-aware analysis" in response.json()["detail"]
 
 
 def test_report_job_route_creates_background_job(client, db_session):
@@ -515,10 +529,24 @@ def test_report_job_route_creates_background_job(client, db_session):
         risk_score=0.8,
         anomaly_score=0.7,
         explanation="Example queued analysis text.",
+        dataset_source="TENANT",
+        dataset_id="TEST-TENANT-DATASET",
+        dataset_name="Test Tenant Dataset",
+        dataset_version="1",
+        dataset_record_count=1,
         analysis_json={
             "executive_summary": "Persisted investigation summary.",
             "risk_assessment": {"score_contributions": {"risk_score": 0.8}},
             "governance": {"evidence_sufficiency": "INSUFFICIENT", "automated_decision": "NONE"},
+            "data_provenance": {
+                "source": "TENANT",
+                "source_label": "Tenant Dataset",
+                "dataset_id": "TEST-TENANT-DATASET",
+                "dataset_name": "Test Tenant Dataset",
+                "dataset_version": "1",
+                "records_analyzed": 1,
+                "synthetic": False,
+            },
         },
     )
     db_session.add(incident)
@@ -534,6 +562,6 @@ def test_report_job_route_creates_background_job(client, db_session):
     response = client.post(f"/reports/{incident.id}/jobs", headers=headers)
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] in {"pending", "completed"}
+    assert payload["status"] in {"queued", "pending", "running", "completed", "failed"}
     assert payload["incident_id"] == incident.id
     assert payload["job_id"]

@@ -35,6 +35,9 @@ def test_platform_drift_binarizes_scores_before_psi(monkeypatch):
 
     monkeypatch.setattr(mi_ops.evaluation_service, "compute_drift", fake_compute_drift)
     monkeypatch.setattr(mi_ops.model_registry, "get_active_version", lambda: "model-v1")
+    # This unit test covers score binarization; enterprise query scoping is
+    # exercised by the authorization and tenant-boundary tests.
+    monkeypatch.setattr(mi_ops, "apply_enterprise_scope", lambda query, _model: query)
     result = mi_ops.platform_drift(
         request=None,
         db=Database(),

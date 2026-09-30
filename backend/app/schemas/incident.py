@@ -25,6 +25,11 @@ class IncidentOut(BaseModel):
     risk_score_source: str = "uploaded"
     anomaly_score_source: str = "uploaded"
     model_version: Optional[str] = None
+    dataset_source: Optional[str] = None
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+    dataset_version: Optional[str] = None
+    dataset_record_count: Optional[int] = None
 
 
 class FeedbackIn(BaseModel):

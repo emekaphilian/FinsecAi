@@ -68,3 +68,5 @@ backend/app/**/*.bak
 
 # TypeScript build cache
 *.tsbuildinfo
+
+!backend/app/data/demo_finsecai_v1.csv

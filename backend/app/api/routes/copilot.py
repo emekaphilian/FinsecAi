@@ -16,6 +16,7 @@ from app.core.authorization import resolve_tenant_context
 from app.db.models import Incident, User
 from app.db.session import SessionLocal
 from app.services import llm_providers
+from app.services.dataset_provenance import filter_to_active_source
 
 router = APIRouter(tags=["copilot"])
 MAX_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -54,9 +55,12 @@ def _incident_context_record(incident: Incident) -> dict:
 
 
 def _build_context(db: Session, tenant_id: str, question: str = "") -> str:
-    incidents = (
+    incident_query = (
         db.query(Incident)
         .filter(Incident.tenant_id == tenant_id)
+    )
+    incidents = (
+        filter_to_active_source(incident_query, db, tenant_id)
         .order_by(Incident.risk_score.desc())
         .limit(15)
         .all()
@@ -73,12 +77,15 @@ def _build_context(db: Session, tenant_id: str, question: str = "") -> str:
         re.findall(r"\b(?:U|USER)[-_]?\d+\b", question, flags=re.IGNORECASE)
     ))
     if mentioned_users:
-        matching_incidents = (
+        matching_query = (
             db.query(Incident)
             .filter(
                 Incident.tenant_id == tenant_id,
                 func.lower(Incident.user_id).in_([user_id.lower() for user_id in mentioned_users]),
             )
+        )
+        matching_incidents = (
+            filter_to_active_source(matching_query, db, tenant_id)
             .order_by(Incident.created_at.desc())
             .limit(30)
             .all()

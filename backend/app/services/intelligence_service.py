@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import Incident, MLPredictionAudit
+from app.db.models import Incident, MLPredictionAudit, Tenant
 from app.services.llm_providers import (
     LLMProviderError,
     get_llm_provider,
@@ -30,6 +30,7 @@ from app.services.llm_providers import (
 from app.services.evidence_retrieval import retrieve_relevant_evidence, semantic_rag_available
 from app.services.investigation_context import build_investigation_context, build_investigation_query
 from app.services.investigation_validator import validate_investigation
+from app.services.dataset_provenance import incident_provenance
 from app.schemas.investigation import (
     AnomalyFinding,
     ConfidenceFactor,
@@ -358,7 +359,14 @@ def retrieve_evidence(
     retrieval_query = build_investigation_query(incident, audit)
     logger.info("Attempting semantic retrieval for tenant=%s incident=%s", tenant_id, incident.id)
     try:
-        rows = retrieve_relevant_evidence(db, tenant_id, retrieval_query, top_k=k)
+        rows = retrieve_relevant_evidence(
+            db,
+            tenant_id,
+            retrieval_query,
+            top_k=k,
+            dataset_source=incident.dataset_source,
+            dataset_id=incident.dataset_id,
+        )
         logger.info("Retrieved %d semantic evidence rows for tenant=%s incident=%s", len(rows), tenant_id, incident.id)
         return rows
     except Exception:
@@ -750,6 +758,8 @@ async def analyze(
                 narrative,
                 safe_evidence,
                 tenant_id=tenant_id,
+                dataset_source=incident.dataset_source,
+                dataset_id=incident.dataset_id,
             )
 
             if llm_validation["status"] != "validated":
@@ -1019,6 +1029,10 @@ async def analyze(
 
     analysis_json.update(
         {
+            "data_provenance": incident_provenance(
+                incident,
+                db.query(Tenant.name).filter(Tenant.id == tenant_id).scalar(),
+            ),
             "intelligence_status": llm_validation["status"],
             "llm_provider": llm_provider_name,
             "llm_provider_error": llm_provider_error,

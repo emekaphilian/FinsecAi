@@ -12,6 +12,8 @@ def validate_investigation(
     retrieved_evidence: list[dict],
     authoritative_framework_ids: set[str] | None = None,
     tenant_id: str | None = None,
+    dataset_source: str | None = None,
+    dataset_id: str | None = None,
 ) -> dict[str, bool | str]:
     # Build a lookup of retrieved evidence texts by id
     valid_ids = {str(item["evidence_id"]) for item in retrieved_evidence}
@@ -58,13 +60,29 @@ def validate_investigation(
     }
     tenant_scope_valid = not mismatched_tenant_ids
 
-    status = "validated" if (evidence_grounded and frameworks_grounded and tenant_scope_valid) else "GROUNDING_VALIDATION_FAILED"
+    mismatched_dataset = {
+        str(item.get("evidence_id"))
+        for item in retrieved_evidence
+        if dataset_source is not None
+        and item.get("metadata", {}).get("dataset_source") not in {"SHARED", dataset_source}
+    }
+    if dataset_id is not None:
+        mismatched_dataset.update(
+            str(item.get("evidence_id"))
+            for item in retrieved_evidence
+            if item.get("metadata", {}).get("dataset_source") == dataset_source
+            and item.get("metadata", {}).get("dataset_id") not in {None, dataset_id}
+        )
+    dataset_scope_valid = not mismatched_dataset
+
+    status = "validated" if (evidence_grounded and frameworks_grounded and tenant_scope_valid and dataset_scope_valid) else "GROUNDING_VALIDATION_FAILED"
 
     result = {
         "schema_valid": True,
         "evidence_grounded": evidence_grounded,
         "frameworks_grounded": frameworks_grounded,
         "tenant_scope_valid": tenant_scope_valid,
+        "dataset_scope_valid": dataset_scope_valid,
         "status": status,
     }
 
@@ -75,5 +93,7 @@ def validate_investigation(
         result["mismatched_support"] = mismatched_support
     if mismatched_tenant_ids:
         result["mismatched_tenant_ids"] = list(mismatched_tenant_ids)
+    if mismatched_dataset:
+        result["mismatched_dataset_evidence_ids"] = list(mismatched_dataset)
 
     return result
