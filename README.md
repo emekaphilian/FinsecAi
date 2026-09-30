@@ -47,7 +47,7 @@ an environment with `backend/requirements.txt` installed.
 
 - Frontend: http://localhost:3001
 - Backend docs: http://localhost:8001/docs
-- Demo login: `analyst@acme.test` / `demo` (seeded on first boot)
+- Demo login: `demo@finsecai.com` / `demo` (seeded on first boot)
 
 Authentication contexts are separate at the backend boundary:
 

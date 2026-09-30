@@ -6,11 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.core.security import hash_password, verify_password
 from app.db.models import (
+    AuditEvent,
     EvidenceChunk,
     Incident,
     IncidentDataset,
+    SuspiciousTransactionReport,
     Tenant,
     TenantConfiguration,
+    UserStatus,
     TenantStatus,
     TenantProvenance,
     TenantType,
@@ -173,6 +176,70 @@ def ensure_demo_dataset_record(db: Session) -> IncidentDataset:
     return dataset
 
 
+DEMO_ACCOUNT_EMAIL = "demo@finsecai.com"
+LEGACY_DEMO_ACCOUNT_EMAILS = (
+    "analyst@acme.test",
+    r"[analyst@acme.test](mailto\:analyst@acme.test)",
+)
+
+
+def migrate_legacy_demo_account(db: Session) -> None:
+    """Replace legacy Acme demo usernames with the sole canonical demo account."""
+    demo_tenant = db.query(Tenant).filter(Tenant.name == "Acme Corp").first()
+    if demo_tenant is None:
+        return
+    if demo_tenant.tenant_type is None:
+        demo_tenant.tenant_type = TenantType.DEMO.value
+        demo_tenant.provenance = TenantProvenance.LEGITIMATE_DEMO.value
+        demo_tenant.status = TenantStatus.ACTIVE.value
+    elif demo_tenant.tenant_type != TenantType.DEMO.value:
+        return
+
+    canonical = db.query(User).filter(User.email == DEMO_ACCOUNT_EMAIL).first()
+    if canonical is not None and canonical.tenant_id not in (None, demo_tenant.id):
+        return
+    legacy_users = (
+        db.query(User)
+        .filter(User.email.in_(LEGACY_DEMO_ACCOUNT_EMAILS))
+        .filter(User.tenant_id == demo_tenant.id)
+        .order_by(User.id)
+        .all()
+    )
+
+    if canonical is None and legacy_users:
+        canonical = legacy_users.pop(0)
+        canonical.email = DEMO_ACCOUNT_EMAIL
+
+    if canonical is None:
+        return
+
+    for legacy_user in legacy_users:
+        if legacy_user.id == canonical.id:
+            continue
+        # Keep audit and STR history attached to the surviving demo identity.
+        db.query(AuditEvent).filter(
+            AuditEvent.actor_user_id == legacy_user.id
+        ).update(
+            {AuditEvent.actor_user_id: canonical.id}, synchronize_session=False
+        )
+        db.query(SuspiciousTransactionReport).filter(
+            SuspiciousTransactionReport.created_by_user_id == legacy_user.id
+        ).update(
+            {SuspiciousTransactionReport.created_by_user_id: canonical.id},
+            synchronize_session=False,
+        )
+        db.delete(legacy_user)
+
+    canonical.email = DEMO_ACCOUNT_EMAIL
+    canonical.hashed_password = hash_password("demo")
+    canonical.role = "analyst"
+    canonical.tenant_id = demo_tenant.id
+    canonical.status = UserStatus.ACTIVE.value
+    canonical.must_change_password = False
+    db.add(canonical)
+    db.commit()
+
+
 def seed_if_empty(db: Session) -> None:
     # If no tenants exist, create demo tenant, hashed demo user, and sample incidents.
     if db.query(Tenant).count() == 0:
@@ -237,21 +304,7 @@ def seed_if_empty(db: Session) -> None:
         acme_tenant.status = TenantStatus.ACTIVE.value
         db.commit()
 
-    # Existing installations may contain the original malformed demo email
-    # or the previous demo password. Repair the known demo analyst account.
-    seeded_email = "demo@finsecai.com"
-    malformed_email = r"[analyst@acme.test](mailto\:analyst@acme.test)"
-
-    user = (
-        db.query(User)
-        .filter(User.email.in_([seeded_email, "analyst@acme.test", malformed_email]))
-        .first()
-    )
-    if user:
-        user.email = seeded_email
-        user.hashed_password = hash_password("demo")
-        db.add(user)
-        db.commit()
+    migrate_legacy_demo_account(db)
 
 
 def ensure_owner_seeded(db: Session) -> None:
