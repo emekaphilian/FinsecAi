@@ -7,9 +7,13 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_password, verify_password
 from app.db.models import (
     AuditEvent,
+    AuthoritativeLabel,
     EvidenceChunk,
+    Feedback,
     Incident,
     IncidentDataset,
+    MLPredictionAudit,
+    ReportJob,
     SuspiciousTransactionReport,
     Tenant,
     TenantConfiguration,
@@ -177,6 +181,8 @@ def ensure_demo_dataset_record(db: Session) -> IncidentDataset:
 
 
 DEMO_ACCOUNT_EMAIL = "demo@finsecai.com"
+DEMO_DATASET_ID = "FINSECAI_DEMO_V1"
+DEMO_DATASET_RECORD_COUNT = 60
 LEGACY_DEMO_ACCOUNT_EMAILS = (
     "analyst@acme.test",
     r"[analyst@acme.test](mailto\:analyst@acme.test)",
@@ -238,6 +244,89 @@ def migrate_legacy_demo_account(db: Session) -> None:
     canonical.must_change_password = False
     db.add(canonical)
     db.commit()
+
+
+def ensure_default_demo_dataset(db: Session) -> int:
+    """Keep Acme's default workspace on the versioned 60-incident fixture."""
+    tenant = db.query(Tenant).filter(Tenant.name == "Acme Corp").first()
+    if tenant is None or tenant.tenant_type != TenantType.DEMO.value:
+        return 0
+
+    config = (
+        db.query(TenantConfiguration)
+        .filter(TenantConfiguration.tenant_id == tenant.id)
+        .first()
+    )
+    if config and (config.configuration or {}).get("data_mode") == "user_data":
+        return 0
+
+    fixture_query = db.query(Incident).filter(
+        Incident.tenant_id == tenant.id,
+        Incident.dataset_id == DEMO_DATASET_ID,
+    )
+    fixture_count = fixture_query.count()
+    stale_query = db.query(Incident).filter(
+        Incident.tenant_id == tenant.id,
+        Incident.dataset_source == DEMO,
+        Incident.dataset_id != DEMO_DATASET_ID,
+    )
+    stale_ids = [incident_id for (incident_id,) in stale_query.with_entities(Incident.id).all()]
+    stale_dataset_ids = {
+        dataset_id
+        for (dataset_id,) in stale_query.with_entities(Incident.dataset_id).distinct().all()
+        if dataset_id
+    }
+
+    replace_fixture = fixture_count != DEMO_DATASET_RECORD_COUNT
+    if replace_fixture:
+        stale_ids.extend(incident_id for (incident_id,) in fixture_query.with_entities(Incident.id).all())
+
+    if stale_ids:
+        db.query(AuthoritativeLabel).filter(
+            AuthoritativeLabel.incident_id.in_(stale_ids)
+        ).delete(synchronize_session=False)
+        db.query(SuspiciousTransactionReport).filter(
+            SuspiciousTransactionReport.incident_id.in_(stale_ids)
+        ).delete(synchronize_session=False)
+        db.query(MLPredictionAudit).filter(
+            MLPredictionAudit.incident_id.in_(stale_ids)
+        ).delete(synchronize_session=False)
+        db.query(Feedback).filter(Feedback.incident_id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(ReportJob).filter(ReportJob.incident_id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Incident).filter(Incident.id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+        for stale_dataset_id in stale_dataset_ids:
+            if not db.query(Incident.id).filter(
+                Incident.dataset_id == stale_dataset_id
+            ).first():
+                db.query(IncidentDataset).filter(
+                    IncidentDataset.id == stale_dataset_id,
+                    IncidentDataset.tenant_id == tenant.id,
+                    IncidentDataset.source_type == DEMO,
+                ).delete(synchronize_session=False)
+
+    dataset = ensure_demo_dataset_record(db)
+    dataset.record_count = DEMO_DATASET_RECORD_COUNT
+    dataset.tenant_id = tenant.id
+    dataset.source_type = DEMO
+    dataset.name = "FinSecAI Demonstration Dataset"
+    dataset.version = "V1"
+    dataset.synthetic = True
+    dataset.original_filename = "demo_finsecai_v1.csv"
+
+    restored = 0
+    if replace_fixture:
+        defaults = default_demo_incidents(tenant.id)
+        db.add_all(defaults)
+        restored = len(defaults)
+
+    db.commit()
+    return restored
 
 
 def seed_if_empty(db: Session) -> None:
@@ -305,6 +394,7 @@ def seed_if_empty(db: Session) -> None:
         db.commit()
 
     migrate_legacy_demo_account(db)
+    ensure_default_demo_dataset(db)
 
 
 def ensure_owner_seeded(db: Session) -> None:

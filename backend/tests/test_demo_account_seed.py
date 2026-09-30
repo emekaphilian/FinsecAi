@@ -4,13 +4,20 @@ from sqlalchemy.orm import sessionmaker
 from app.core.security import verify_password
 from app.db.models import (
     AuditEvent,
+    Incident,
+    IncidentDataset,
     SuspiciousTransactionReport,
     Tenant,
+    TenantConfiguration,
     TenantType,
     User,
 )
 from app.db.session import Base
-from app.seed import migrate_legacy_demo_account, seed_if_empty
+from app.seed import (
+    ensure_default_demo_dataset,
+    migrate_legacy_demo_account,
+    seed_if_empty,
+)
 
 
 def test_seed_creates_only_canonical_demo_account(db_session, monkeypatch):
@@ -147,3 +154,98 @@ def test_startup_migrates_legacy_demo_account_when_seeding_disabled(monkeypatch)
     finally:
         session.close()
         engine.dispose()
+
+
+def test_seed_replaces_legacy_incidents_with_the_60_row_fixture(db_session, monkeypatch):
+    from app.seed import default_demo_incidents
+
+    monkeypatch.setattr("app.seed.embed_evidence_chunks", lambda db, chunks: 0)
+    tenant = Tenant(
+        name="Acme Corp",
+        tenant_type=TenantType.DEMO.value,
+    )
+    db_session.add(tenant)
+    db_session.flush()
+    db_session.add_all(
+        [
+            Incident(
+                tenant_id=tenant.id,
+                user_id=f"LEGACY-{index}",
+                amount=100 + index,
+                risk_score=0.5,
+                anomaly_score=0.5,
+                dataset_source="DEMO",
+                dataset_id=f"LEGACY-{tenant.id}-DEMO",
+                dataset_name="Preserved legacy incident dataset",
+            )
+            for index in range(3)
+        ]
+    )
+    db_session.add(
+        IncidentDataset(
+            id=f"LEGACY-{tenant.id}-DEMO",
+            tenant_id=tenant.id,
+            source_type="DEMO",
+            name="Preserved legacy incident dataset",
+            version="legacy",
+            record_count=3,
+            synthetic=True,
+        )
+    )
+    db_session.commit()
+
+    restored = ensure_default_demo_dataset(db_session)
+
+    assert restored == 60
+    incidents = db_session.query(Incident).filter_by(tenant_id=tenant.id).all()
+    assert len(incidents) == 60
+    assert {incident.dataset_id for incident in incidents} == {"FINSECAI_DEMO_V1"}
+    assert {incident.user_id for incident in incidents} == {
+        incident.user_id for incident in default_demo_incidents(tenant.id)
+    }
+    dataset = db_session.query(IncidentDataset).filter_by(id="FINSECAI_DEMO_V1").one()
+    assert dataset.record_count == 60
+    assert db_session.query(IncidentDataset).filter_by(
+        id=f"LEGACY-{tenant.id}-DEMO"
+    ).count() == 0
+
+    # Startup is idempotent and must not duplicate or rewrite the fixture.
+    existing_ids = {incident.id for incident in incidents}
+    assert ensure_default_demo_dataset(db_session) == 0
+    assert {incident.id for incident in db_session.query(Incident).filter_by(tenant_id=tenant.id)} == existing_ids
+
+
+def test_seed_does_not_replace_uploaded_demo_workspace_data(db_session):
+    tenant = Tenant(name="Acme Corp", tenant_type=TenantType.DEMO.value)
+    db_session.add(tenant)
+    db_session.flush()
+    db_session.add(
+        TenantConfiguration(
+            tenant_id=tenant.id,
+            configuration={"data_mode": "user_data"},
+        )
+    )
+    uploaded = Incident(
+        tenant_id=tenant.id,
+        user_id="UPLOADED-1",
+        amount=123,
+        risk_score=0.2,
+        anomaly_score=0.3,
+        dataset_source="USER_TEST",
+        dataset_id="UPLOAD-1",
+    )
+    legacy = Incident(
+        tenant_id=tenant.id,
+        user_id="LEGACY-1",
+        amount=456,
+        risk_score=0.7,
+        anomaly_score=0.8,
+        dataset_source="DEMO",
+        dataset_id=f"LEGACY-{tenant.id}-DEMO",
+    )
+    db_session.add_all([uploaded, legacy])
+    db_session.commit()
+
+    assert ensure_default_demo_dataset(db_session) == 0
+    assert db_session.query(Incident).filter_by(id=uploaded.id).one()
+    assert db_session.query(Incident).filter_by(id=legacy.id).one()
