@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class IncidentOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
     id: str
     tenant_id: str
     user_id: str

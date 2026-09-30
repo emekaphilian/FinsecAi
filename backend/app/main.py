@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,17 @@ from app.services.dataset_provenance import migrate_legacy_incident_provenance
 
 logger = logging.getLogger("finsecai.startup")
 
-app = FastAPI(title="FinSecAI SOC Command Center", version="1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    on_startup()
+    yield
+
+
+app = FastAPI(
+    title="FinSecAI SOC Command Center",
+    version="1.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +53,6 @@ app.include_router(tenants.router)
 app.include_router(audit.router)
 
 
-@app.on_event("startup")
 def on_startup():
     _ensure_sqlite_schema_compatibility(engine)
     _ensure_dataset_provenance_schema_compatibility(engine)
