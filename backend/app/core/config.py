@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # supported for existing deployments, while allowing root values to win.
     model_config = SettingsConfigDict(
         env_file=(BACKEND_ROOT / ".env", PROJECT_ROOT / ".env"),
+        protected_namespaces=(),
         extra="ignore",
     )
 
@@ -39,6 +40,10 @@ class Settings(BaseSettings):
     )
 
     llm_provider: str = "cohere"
+    llm_fallback_provider: str = "local"
+    local_llm_url: str = "http://localhost:11434/api/generate"
+    local_llm_model: str = "llama3.2"
+    local_llm_timeout_seconds: int = 120
     embedding_provider: str = "cohere"
     cohere_api_key: str = ""
     cohere_chat_model: str = "command-a-plus-05-2026"

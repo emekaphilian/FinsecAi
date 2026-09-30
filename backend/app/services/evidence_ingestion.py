@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import EvidenceChunk
 from app.services.cohere_embeddings import get_embedding_provider
-from app.services.evidence_retrieval import semantic_rag_available
 
 
 def _configured_embedding_model() -> str:
@@ -22,22 +21,12 @@ def _configured_embedding_model() -> str:
 
 
 def embed_evidence_chunks(db: Session, chunks: list[EvidenceChunk]) -> int:
-    """Embed chunks before commit when production pgvector is available.
+    """Embed chunks before commit for both pgvector and JSON-backed stores.
 
-    Development SQLite remains deliberately unembedded; callers must not
-    present it as semantic RAG.
+    PostgreSQL ranks vectors in SQL. Other supported databases persist the
+    same provider vectors and rank the tenant-scoped candidates in Python.
     """
     if not chunks:
-        return 0
-    if not semantic_rag_available(db):
-        for chunk in chunks:
-            metadata = dict(chunk.metadata_json or {})
-            metadata.update({
-                "embedding_status": "skipped",
-                "embedding_error": "semantic_rag_unavailable",
-                "embedding_model": _configured_embedding_model(),
-            })
-            chunk.metadata_json = metadata
         return 0
     try:
         service = get_embedding_provider()

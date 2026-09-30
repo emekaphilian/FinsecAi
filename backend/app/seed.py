@@ -73,6 +73,15 @@ def ensure_evidence_seeded(db: Session) -> int:
 
     seeded_count = 0
     for tenant in db.query(Tenant).filter(Tenant.tenant_type == TenantType.DEMO.value).all():
+        # Re-index legacy reference rows after upgrading from tier-based
+        # retrieval. This is tenant-scoped and only touches missing vectors.
+        unembedded = db.query(EvidenceChunk).filter(
+            EvidenceChunk.tenant_id == tenant.id,
+            EvidenceChunk.embedding.is_(None),
+        ).all()
+        if unembedded:
+            embed_evidence_chunks(db, unembedded)
+
         existing = db.query(EvidenceChunk).filter(
             EvidenceChunk.tenant_id == tenant.id).count()
         if existing == 0:

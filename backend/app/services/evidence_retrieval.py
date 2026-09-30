@@ -1,8 +1,9 @@
-"""Tenant-scoped pgvector retrieval. SQLite deliberately has no RAG fallback."""
+"""Tenant-scoped semantic retrieval using pgvector or persisted JSON vectors."""
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -32,18 +33,12 @@ def _dataset_filter(dataset_source: str | None, dataset_id: str | None):
     )
 
 
-def _fallback_evidence_rows(
+def _python_vector_evidence_rows(
     db: Session, tenant_id: str, top_k: int,
+    query_vector: list[float], model_name: str,
     dataset_source: str | None = None, dataset_id: str | None = None,
+    similarity_threshold: float = 0.0,
 ) -> list[dict[str, Any]]:
-    # Deterministic, tenant-scoped fallback for non-Postgres environments.
-    # Return the most recent evidence chunks for the tenant without any
-    # fabricated semantic similarity values. This is safe and preserves
-    # the contract expected by existing tests and APIs: callers receive
-    # real stored evidence (if present) and explicit metadata describing
-    # that semantic RAG is unavailable.
-    logger.info("Semantic RAG not available for tenant %s; returning deterministic fallback rows", tenant_id)
-
     try:
         filters = [EvidenceChunk.tenant_id == tenant_id]
         dataset_filter = _dataset_filter(dataset_source, dataset_id)
@@ -51,35 +46,52 @@ def _fallback_evidence_rows(
             filters.append(dataset_filter)
         rows = (
             db.query(EvidenceChunk)
-            .filter(*filters)
+            .filter(*filters, EvidenceChunk.embedding.is_not(None), EvidenceChunk.embedding_model == model_name)
             .order_by(EvidenceChunk.embedded_at.desc().nullslast())
-            .limit(top_k)
+            .limit(5000)
             .all()
         )
     except Exception:
         logger.exception("Deterministic fallback query failed for tenant %s", tenant_id)
         return []
 
+    def cosine_similarity(vector: list[float]) -> float | None:
+        if len(vector) != len(query_vector) or not vector:
+            return None
+        dot = sum(float(a) * float(b) for a, b in zip(vector, query_vector))
+        norm_a = math.sqrt(sum(float(a) ** 2 for a in vector))
+        norm_b = math.sqrt(sum(float(b) ** 2 for b in query_vector))
+        return dot / (norm_a * norm_b) if norm_a and norm_b else None
+
+    ranked = []
+    for chunk in rows:
+        score = cosine_similarity(chunk.embedding or [])
+        if score is not None:
+            ranked.append((chunk, score))
+    ranked = sorted(ranked, key=lambda item: item[1], reverse=True)[:top_k]
+    above_threshold = [item for item in ranked if item[1] >= similarity_threshold]
+    if above_threshold:
+        ranked = above_threshold
     return [
         {
             "evidence_id": str(chunk.id),
             "framework_id": chunk.framework_id,
             "source": chunk.source,
             "text": chunk.text,
-            "similarity": None,
+            "similarity": round(score, 6),
             "metadata": {
                 **(chunk.metadata_json or {}),
                 "tenant_id": tenant_id,
                 "dataset_source": getattr(chunk, "dataset_source", None),
                 "dataset_id": getattr(chunk, "dataset_id", None),
-                "retrieval_method": "disabled_non_postgres",
-                "semantic_rag_available": False,
-                "similarity_score": None,
+                "retrieval_method": f"semantic_python:{getattr(settings, 'embedding_provider', 'configured')}",
+                "semantic_rag_available": True,
+                "similarity_score": round(score, 6),
                 "source": chunk.source,
                 "embedding_model": chunk.embedding_model,
             },
         }
-        for chunk in rows
+        for chunk, score in ranked
     ]
 
 
@@ -94,20 +106,12 @@ def retrieve_relevant_evidence(
     dataset_source: str | None = None,
     dataset_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve semantic evidence with tenant isolation enforced in SQL.
-
-    SQLite is intentionally not treated as a vector store. Callers receive no
-    semantic evidence in development and must expose that state explicitly.
-    """
+    """Retrieve semantically ranked evidence while enforcing tenant scope in SQL."""
     similarity_threshold = (
         settings.cohere_similarity_threshold
         if similarity_threshold is None
         else similarity_threshold
     )
-    if not semantic_rag_available(db):
-        # Semantic retrieval unavailable (non-Postgres). Fail closed.
-        logger.warning("Semantic RAG unavailable (non-Postgres); tenant=%s", tenant_id)
-        return _fallback_evidence_rows(db, tenant_id, top_k, dataset_source, dataset_id)
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError("similarity_threshold must be between 0 and 1")
 
@@ -121,6 +125,12 @@ def retrieve_relevant_evidence(
         # Fail closed: embedding generation failed. Do not fabricate results.
         logger.warning("Semantic retrieval embedding failed for tenant %s: %s", tenant_id, exc)
         return []
+
+    if not semantic_rag_available(db):
+        return _python_vector_evidence_rows(
+            db, tenant_id, top_k, query_vector, service.model_name,
+            dataset_source, dataset_id, similarity_threshold,
+        )
 
     distance = EvidenceChunk.embedding.cosine_distance(query_vector)
     max_distance = 1.0 - similarity_threshold
