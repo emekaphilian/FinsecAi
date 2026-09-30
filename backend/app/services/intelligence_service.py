@@ -406,8 +406,10 @@ def _build_investigation_context(
     db: Session,
     tenant_id: str,
     incident: Incident,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> InvestigationContext:
-    evidence = retrieve_evidence(db, tenant_id, incident)
+    if evidence is None:
+        evidence = retrieve_evidence(db, tenant_id, incident)
 
     mapping = get_framework_mapping(
         float(incident.risk_score),
@@ -635,19 +637,21 @@ async def analyze(
     db: Session,
     tenant_id: str,
     incident: Incident,
+    *,
+    evidence_override: list[dict[str, Any]] | None = None,
+    allow_external_enrichment: bool = True,
 ) -> dict[str, Any]:
-    """Analyze one incident and return a JSON-friendly result."""
+    """Analyze one incident and return a JSON-friendly result.
 
-    context = _build_investigation_context(
-        db,
-        tenant_id,
-        incident,
-    )
+    Batch callers may disable external enrichment. That preserves fast,
+    deterministic dashboard updates for large uploads while individual
+    investigations retain semantic retrieval and LLM enrichment.
+    """
 
-    evidence = retrieve_evidence(
-        db,
-        tenant_id,
-        incident,
+    evidence = (
+        evidence_override
+        if evidence_override is not None
+        else retrieve_evidence(db, tenant_id, incident)
     )
 
     evidence_coverage = min(
@@ -707,7 +711,10 @@ async def analyze(
     llm_provider_name: str | None = None
     llm_model_name: str | None = None
 
-    if not safe_evidence:
+    if not allow_external_enrichment:
+        llm_validation["status"] = "BATCH_RULE_BASED_ANALYSIS"
+
+    elif not safe_evidence:
         llm_validation["status"] = "AI_INVESTIGATION_UNAVAILABLE"
 
     else:
@@ -822,10 +829,13 @@ async def analyze(
         result = InvestigationResult.model_validate(payload)
 
     except Exception:
-        logger.warning(
-            "Using deterministic fallback investigation result",
-            exc_info=True,
-        )
+        if allow_external_enrichment:
+            logger.warning(
+                "Using deterministic fallback investigation result",
+                exc_info=True,
+            )
+        else:
+            logger.debug("Using requested deterministic batch analysis")
 
         result = InvestigationResult(
             version="v2",

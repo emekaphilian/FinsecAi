@@ -96,7 +96,7 @@ async function handleAnalyzeAll() {
       const path = tenantId
         ? `/incidents/analyze-batch?tenant_id=${encodeURIComponent(tenantId)}`
         : "/incidents/analyze-batch";
-      const res = await apiFetch<{ analyzed: number }>(path, { method: 'POST' });
+      const res = await apiFetch<{ analyzed: number; analysis_mode?: string }>(path, { method: 'POST' });
       setMessage(
         res.analyzed > 0
           ? `Analysis complete — ${res.analyzed} incidents analyzed.`

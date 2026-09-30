@@ -247,6 +247,12 @@ async def analyze_batch(
     tenant_id: str | None = None,
     db: Session = Depends(get_db), user: User = Depends(require_permission(INCIDENTS_INVESTIGATE))
 ):
+    """Populate dashboard fields without serial LLM calls for every upload row.
+
+    Full semantic retrieval and narrative generation stay available for an
+    analyst-selected incident via ``/{incident_id}/analyze``. Doing that for
+    every row in a large upload can otherwise take hours.
+    """
     context = resolve_tenant_context(db, user, tenant_id)
     incidents = apply_tenant_scope(db.query(Incident), Incident, user, context)
     if context.tenant_id:
@@ -256,11 +262,17 @@ async def analyze_batch(
         if not (incident.analysis_json or {}).get("data_provenance")
     ]
     for incident in incidents:
-        result = await intelligence_service.analyze(db, incident.tenant_id, incident)
+        result = await intelligence_service.analyze(
+            db,
+            incident.tenant_id,
+            incident,
+            evidence_override=[],
+            allow_external_enrichment=False,
+        )
         for key, value in result.items():
             setattr(incident, key, value)
     db.commit()
-    return {"analyzed": len(incidents)}
+    return {"analyzed": len(incidents), "analysis_mode": "fast_rule_based"}
 
 
 @router.get("/{incident_id}/mapping-explanation")
