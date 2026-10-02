@@ -19,17 +19,23 @@ import logging
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import Incident, MLPredictionAudit, Tenant
+from app.db.models import FindingGovernanceLink, Incident, MLPredictionAudit, Tenant
 from app.services.llm_providers import (
+    LLMProviderCredentialError,
     LLMProviderError,
     get_llm_providers,
 )
 from app.services.evidence_retrieval import retrieve_relevant_evidence, semantic_rag_available
 from app.services.investigation_context import build_investigation_context, build_investigation_query
-from app.services.investigation_validator import validate_investigation
+from app.services.governance_service import find_governance_matches
+from app.services.investigation_validator import (
+    validate_governance_matches,
+    validate_investigation,
+)
 from app.services.dataset_provenance import incident_provenance
 from app.services.transaction_history import build_transaction_history
 from app.schemas.investigation import (
@@ -44,6 +50,60 @@ from app.schemas.investigation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_validated_governance_links(
+    db: Session,
+    *,
+    incident_id: str,
+    findings: list[Any],
+    validated_governance_matches: list[dict[str, Any]],
+) -> None:
+    """Persist validated governance links that share evidence with a finding."""
+    for finding_index, finding in enumerate(findings, start=1):
+        finding_id = f"finding-{finding_index}"
+        finding_evidence_ids = {
+            str(evidence_id)
+            for evidence_id in getattr(finding, "supporting_evidence", [])
+            if evidence_id
+        }
+
+        for match in validated_governance_matches:
+            if match.get("validation_status") != "validated":
+                continue
+
+            supporting_evidence = {
+                str(evidence_id)
+                for evidence_id in match.get("supporting_evidence", [])
+                if evidence_id
+            }
+            if not finding_evidence_ids.intersection(supporting_evidence):
+                continue
+
+            existing_link = db.scalar(
+                select(FindingGovernanceLink).where(
+                    FindingGovernanceLink.incident_id == incident_id,
+                    FindingGovernanceLink.finding_id == finding_id,
+                    FindingGovernanceLink.control_id == match["control_id"],
+                    FindingGovernanceLink.relationship_type
+                    == match["relationship_type"],
+                )
+            )
+            if existing_link is not None:
+                continue
+
+            db.add(
+                FindingGovernanceLink(
+                    incident_id=incident_id,
+                    finding_id=finding_id,
+                    control_id=match["control_id"],
+                    relationship_type=match["relationship_type"],
+                    match_reason=match["match_reason"],
+                    supporting_evidence=match["supporting_evidence"],
+                    confidence=match["confidence"],
+                    validation_status="validated",
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +710,13 @@ async def analyze(
     investigations retain semantic retrieval and LLM enrichment.
     """
 
+    primary_provider = (getattr(settings, "llm_provider", None) or "cohere").strip().lower()
+    primary_cohere_credentials_missing = (
+        allow_external_enrichment
+        and primary_provider == "cohere"
+        and not getattr(settings, "cohere_api_key", None)
+    )
+
     evidence = (
         evidence_override
         if evidence_override is not None
@@ -720,6 +787,9 @@ async def analyze(
 
     if not allow_external_enrichment:
         llm_validation["status"] = "BATCH_RULE_BASED_ANALYSIS"
+
+    elif primary_cohere_credentials_missing:
+        llm_validation["status"] = "COHERE_API_KEY_MISSING"
 
     elif not safe_evidence:
         llm_validation["status"] = "AI_INVESTIGATION_UNAVAILABLE"
@@ -814,6 +884,9 @@ async def analyze(
                     )
                     llm_validation["status"] = "LLM_PROVIDER_ERROR"
 
+        except LLMProviderCredentialError as exc:
+            logger.warning("Investigation provider credentials unavailable: %s", exc)
+            llm_validation["status"] = "COHERE_API_KEY_MISSING"
         except LLMProviderError as exc:
             logger.warning("No investigation provider available: %s", exc)
             llm_validation["status"] = "LLM_PROVIDER_ERROR"
@@ -1019,7 +1092,7 @@ async def analyze(
     # Fall back to environment-level signals when evidence metadata is absent.
     if not derived_retrieval_method:
         derived_retrieval_method = (
-            "semantic_pgvector" if semantic_rag_available(db) else "semantic_python"
+            "semantic_pgvector" if semantic_rag_available(db) else "disabled_non_postgres"
         )
 
     if not derived_embedding_model:
@@ -1031,6 +1104,53 @@ async def analyze(
 
     # If we don't have a provider name, expose the LLM validation status as the blocker.
     llm_provider_error = None if llm_provider_name else llm_validation.get("status")
+
+    # Deterministic governance matching.
+    governance_matches = find_governance_matches(
+        db,
+        tenant_id=tenant_id,
+        evidence_items=evidence,
+    )
+
+    evidence_ids = {
+        str(
+            item.get("id")
+            or item.get("evidence_id")
+            or ""
+        )
+        for item in evidence
+        if item.get("id") or item.get("evidence_id")
+    }
+
+    governance_match_payloads = [
+        {
+            "control_id": match.control_id,
+            "governance_document_id": match.governance_document_id,
+            "document_type": match.document_type,
+            "document_name": match.document_name,
+            "document_version": match.document_version,
+            "control_reference": match.control_reference,
+            "relationship_type": match.relationship_type,
+            "match_reason": match.match_reason,
+            "supporting_evidence": match.supporting_evidence,
+            "confidence": match.confidence,
+            "validation_status": match.validation_status,
+        }
+        for match in governance_matches
+    ]
+
+    validated_governance_matches = validate_governance_matches(
+        governance_match_payloads,
+        evidence_ids,
+    )
+
+    # Persist only validated governance relationships.
+    _persist_validated_governance_links(
+        db,
+        incident_id=incident.id,
+        findings=result.findings,
+        validated_governance_matches=validated_governance_matches,
+    )
 
     analysis_json.update(
         {
@@ -1046,6 +1166,7 @@ async def analyze(
             "retrieval_method": derived_retrieval_method,
             "embedding_model": derived_embedding_model,
             "validation": llm_validation,
+            "governance_links": validated_governance_matches,
             "governance": {
                 "evidence_sufficiency": (
                     "SUFFICIENT" if evidence_coverage >= 0.4 else "INSUFFICIENT"
@@ -1075,3 +1196,11 @@ async def analyze(
         ),
         "analysis_json": analysis_json,
     }
+
+
+# Backward-compatible name used by deployment smoke checks.
+analyze_incident = analyze
+
+
+
+

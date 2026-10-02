@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import EvidenceChunk
 from app.services.cohere_embeddings import get_embedding_provider
+from app.services.evidence_retrieval import semantic_rag_available
 
 
 def _configured_embedding_model() -> str:

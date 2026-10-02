@@ -327,3 +327,94 @@ class EvaluationRun(Base):
     status: Mapped[str] = mapped_column(String, default="passed")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class GovernanceDocument(Base):
+    __tablename__ = "governance_documents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("tenants.id"), nullable=True, index=True
+    )
+    document_type: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String)
+    issuer: Mapped[str] = mapped_column(String, default="")
+    effective_date: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    source: Mapped[str] = mapped_column(String, default="")
+    dataset_source: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    dataset_id: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String, default="ACTIVE", index=True
+    )
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+
+
+class GovernanceControl(Base):
+    __tablename__ = "governance_controls"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    governance_document_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("governance_documents.id"),
+        index=True,
+    )
+    control_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String, default="")
+    control_text: Mapped[str] = mapped_column(Text, default="")
+    control_type: Mapped[str] = mapped_column(String)
+    framework: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    parent_control_id: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+
+
+class FindingGovernanceLink(Base):
+    __tablename__ = "finding_governance_links"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    incident_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("incidents.id"),
+        index=True,
+    )
+    finding_id: Mapped[str] = mapped_column(
+        String,
+        index=True,
+    )
+    control_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("governance_controls.id"),
+        index=True,
+    )
+    relationship_type: Mapped[str] = mapped_column(String, index=True)
+    match_reason: Mapped[str] = mapped_column(Text, default="")
+    supporting_evidence: Mapped[list] = mapped_column(
+        JSON, default=list
+    )
+    confidence: Mapped[float] = mapped_column(
+        Float, default=0.0
+    )
+    validation_status: Mapped[str] = mapped_column(
+        String, default="candidate"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )

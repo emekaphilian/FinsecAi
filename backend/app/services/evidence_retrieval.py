@@ -95,6 +95,61 @@ def _python_vector_evidence_rows(
     ]
 
 
+def _non_postgres_fallback_rows(
+    db: Session,
+    tenant_id: str,
+    top_k: int,
+    dataset_source: str | None = None,
+    dataset_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Deterministic compatibility fallback for non-PostgreSQL stores.
+
+    This path is intentionally not semantic retrieval. PostgreSQL/Neon
+    remains the production semantic-RAG path.
+    """
+    try:
+        filters = [EvidenceChunk.tenant_id == tenant_id]
+        dataset_filter = _dataset_filter(dataset_source, dataset_id)
+        if dataset_filter is not None:
+            filters.append(dataset_filter)
+
+        rows = (
+            db.query(EvidenceChunk)
+            .filter(*filters)
+            .order_by(EvidenceChunk.embedded_at.desc())
+            .limit(top_k)
+            .all()
+        )
+    except Exception:
+        logger.exception(
+            "Non-PostgreSQL evidence fallback failed for tenant %s",
+            tenant_id,
+        )
+        return []
+
+    return [
+        {
+            "evidence_id": str(chunk.id),
+            "framework_id": chunk.framework_id,
+            "source": chunk.source,
+            "text": chunk.text,
+            "similarity": 0.0,
+            "metadata": {
+                **(chunk.metadata_json or {}),
+                "tenant_id": tenant_id,
+                "dataset_source": getattr(chunk, "dataset_source", None),
+                "dataset_id": getattr(chunk, "dataset_id", None),
+                "retrieval_method": "disabled_non_postgres",
+                "semantic_rag_available": False,
+                "similarity_score": 0.0,
+                "source": chunk.source,
+                "embedding_model": getattr(chunk, "embedding_model", None),
+            },
+        }
+        for chunk in rows
+    ]
+
+
 def retrieve_relevant_evidence(
     db: Session,
     tenant_id: str,
@@ -127,9 +182,26 @@ def retrieve_relevant_evidence(
         return []
 
     if not semantic_rag_available(db):
-        return _python_vector_evidence_rows(
-            db, tenant_id, top_k, query_vector, service.model_name,
-            dataset_source, dataset_id, similarity_threshold,
+        rows = _python_vector_evidence_rows(
+            db,
+            tenant_id,
+            top_k,
+            query_vector,
+            service.model_name,
+            dataset_source,
+            dataset_id,
+            similarity_threshold,
+        )
+
+        if rows:
+            return rows
+
+        return _non_postgres_fallback_rows(
+            db,
+            tenant_id,
+            top_k,
+            dataset_source,
+            dataset_id,
         )
 
     distance = EvidenceChunk.embedding.cosine_distance(query_vector)

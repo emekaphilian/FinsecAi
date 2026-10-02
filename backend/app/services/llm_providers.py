@@ -26,6 +26,10 @@ class LLMProviderError(RuntimeError):
     """Raised when the configured LLM provider cannot be used."""
 
 
+class LLMProviderCredentialError(LLMProviderError):
+    """Raised when a configured provider is missing required credentials."""
+
+
 class LLMProvider(Protocol):
     """Provider contract used by FinSecAI application services."""
 
@@ -59,7 +63,7 @@ class CohereInvestigationProvider:
         self.api_key = api_key or settings.cohere_api_key
         self.model = model or settings.cohere_chat_model
         if not self.api_key:
-            raise LLMProviderError("COHERE_API_KEY is not configured")
+            raise LLMProviderCredentialError("COHERE_API_KEY is not configured")
         try:
             import cohere
         except Exception as exc:  # pragma: no cover
@@ -221,6 +225,9 @@ def get_llm_providers() -> list[LLMProvider]:
         (getattr(settings, "llm_provider", None) or "cohere").strip().lower(),
         (getattr(settings, "llm_fallback_provider", None) or "local").strip().lower(),
     ]
+    if names[0] == "cohere" and not settings.cohere_api_key:
+        raise LLMProviderCredentialError("COHERE_API_KEY is not configured")
+
     providers: list[LLMProvider] = []
     errors: list[str] = []
     for name in dict.fromkeys(names):

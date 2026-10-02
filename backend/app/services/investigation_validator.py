@@ -97,3 +97,60 @@ def validate_investigation(
         result["mismatched_dataset_evidence_ids"] = list(mismatched_dataset)
 
     return result
+
+def validate_governance_matches(
+    matches: list[dict],
+    evidence_ids: set[str],
+) -> list[dict]:
+    """Validate governance match lifecycle and evidence-reference integrity.
+
+    Candidate matches remain candidates: presence of cited IDs alone cannot
+    turn keyword overlap into an evidence-backed assertion. An upstream
+    evidence review must explicitly mark a relationship ``evidence_backed``;
+    this function then checks its references and relationship type before
+    promoting it to ``validated``.
+    """
+    allowed_relationships = {
+        "violates",
+        "subject_to",
+        "mapped_to",
+    }
+
+    validated: list[dict] = []
+
+    for match in matches:
+        relationship_type = str(
+            match.get("relationship_type") or ""
+        ).strip().lower()
+
+        supporting_evidence = [
+            str(item)
+            for item in (
+                match.get("supporting_evidence") or []
+            )
+            if str(item)
+        ]
+
+        evidence_grounded = bool(supporting_evidence) and all(
+            evidence_id in evidence_ids
+            for evidence_id in supporting_evidence
+        )
+        item = dict(match)
+
+        relationship_valid = relationship_type in allowed_relationships
+        source_status = str(
+            match.get("validation_status") or "candidate"
+        ).strip().lower()
+
+        if not evidence_grounded or not relationship_valid:
+            item["validation_status"] = "rejected"
+        elif source_status in {"evidence_backed", "validated"}:
+            item["validation_status"] = "validated"
+        elif source_status == "candidate":
+            item["validation_status"] = "candidate"
+        else:
+            item["validation_status"] = "rejected"
+
+        validated.append(item)
+
+    return validated
