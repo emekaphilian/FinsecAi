@@ -17,6 +17,8 @@ class GovernanceMatch:
     document_name: str
     document_version: str
     control_reference: str
+    control_title: str
+    control_text: str
     relationship_type: str
     match_reason: str
     supporting_evidence: list[str]
@@ -117,6 +119,10 @@ def find_governance_matches(
             GovernanceControl.governance_document_id.in_(document_ids)
         )
     ).all()
+    controls = [
+        control for control in controls
+        if (control.metadata_json or {}).get("review_status", "APPROVED") == "APPROVED"
+    ]
 
     documents_by_id = {
         document.id: document
@@ -147,6 +153,8 @@ def find_governance_matches(
                 document_name=document.name,
                 document_version=document.version,
                 control_reference=control.control_id,
+                control_title=control.title,
+                control_text=control.control_text,
                 # Retrieval cannot establish that a policy was violated or a
                 # regulation applies. Keep all text matches non-assertive.
                 relationship_type="mapped_to",

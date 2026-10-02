@@ -170,18 +170,30 @@ def retrieve_relevant_evidence(
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError("similarity_threshold must be between 0 and 1")
 
-    try:
-        if embedding_service is not None:
-            service = embedding_service
-        else:
-            service = get_embedding_provider()
-        query_vector = service.embed_query(query)
-    except Exception as exc:
-        # Fail closed: embedding generation failed. Do not fabricate results.
-        logger.warning("Semantic retrieval embedding failed for tenant %s: %s", tenant_id, exc)
-        return []
-
+    # Non-PostgreSQL stores do not support pgvector. Keep the compatibility
+    # path usable even when the optional embedding SDK is unavailable.
     if not semantic_rag_available(db):
+        try:
+            if embedding_service is not None:
+                service = embedding_service
+            else:
+                service = get_embedding_provider()
+            query_vector = service.embed_query(query)
+        except Exception as exc:
+            logger.warning(
+                "Semantic retrieval unavailable for non-PostgreSQL store "
+                "for tenant %s: %s",
+                tenant_id,
+                exc,
+            )
+            return _non_postgres_fallback_rows(
+                db,
+                tenant_id,
+                top_k,
+                dataset_source,
+                dataset_id,
+            )
+
         rows = _python_vector_evidence_rows(
             db,
             tenant_id,
@@ -203,6 +215,23 @@ def retrieve_relevant_evidence(
             dataset_source,
             dataset_id,
         )
+
+    # PostgreSQL/Neon production semantic-RAG path.
+    try:
+        if embedding_service is not None:
+            service = embedding_service
+        else:
+            service = get_embedding_provider()
+        query_vector = service.embed_query(query)
+    except Exception as exc:
+        # Fail closed for the production semantic path. Do not fabricate
+        # semantic results when query embedding generation fails.
+        logger.warning(
+            "Semantic retrieval embedding failed for tenant %s: %s",
+            tenant_id,
+            exc,
+        )
+        return []
 
     distance = EvidenceChunk.embedding.cosine_distance(query_vector)
     max_distance = 1.0 - similarity_threshold
@@ -251,9 +280,8 @@ def retrieve_relevant_evidence(
 
     except Exception as exc:
         logger.exception(
-            "Vector retrieval query failed for tenant %s: %s",
+            "Vector retrieval query failed for tenant %s",
             tenant_id,
-            exc,
         )
         return []
 

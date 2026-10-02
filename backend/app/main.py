@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import audit, analytics, auth, compliance, copilot, incidents, mi_ops, reports, tenants
+from app.api.routes import audit, analytics, auth, compliance, copilot, governance, incidents, mi_ops, reports, tenants
 from app.core.config import settings
 from app.db.models import User
 from app.db.session import (
@@ -54,6 +54,7 @@ app.include_router(mi_ops.router)
 app.include_router(reports.router)
 app.include_router(copilot.router)
 app.include_router(compliance.router)
+app.include_router(governance.router)
 app.include_router(tenants.router)
 app.include_router(audit.router)
 

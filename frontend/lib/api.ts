@@ -202,16 +202,21 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const token = getToken();
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData
-        ? {}
-        : { "Content-Type": "application/json" }),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: {
+        ...(options.body instanceof FormData
+          ? {}
+          : { "Content-Type": "application/json" }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+  } catch {
+    throw new Error(`Cannot reach the API at ${API_URL}${path}. Check NEXT_PUBLIC_API_URL and the backend CORS settings.`);
+  }
 
   if (res.status === 401) {
     if (!hasRetried && (await refreshAccessToken())) {

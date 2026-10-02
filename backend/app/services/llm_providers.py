@@ -68,7 +68,10 @@ class CohereInvestigationProvider:
             import cohere
         except Exception as exc:  # pragma: no cover
             raise LLMProviderError("Cohere SDK is not available") from exc
-        self.client = cohere.ClientV2(api_key=self.api_key)
+        self.client = cohere.ClientV2(
+            api_key=self.api_key,
+            timeout=settings.cohere_timeout_seconds,
+        )
 
     def _extract_text(self, response: Any) -> str:
         message = getattr(response, "message", None)

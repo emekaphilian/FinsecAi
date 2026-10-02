@@ -59,13 +59,13 @@ _styles.add(ParagraphStyle(
     "ReportKicker", parent=_styles["Normal"], textColor=GOLD, fontSize=9,
     fontName="Helvetica-Bold", spaceAfter=4,
 ))
-_styles.add(ParagraphStyle("Meta", parent=_styles["Normal"], textColor=GRAY, fontSize=9))
+_styles.add(ParagraphStyle("Meta", parent=_styles["Normal"], textColor=GRAY, fontName="Helvetica", fontSize=9, leading=12, wordWrap="CJK"))
 _styles.add(ParagraphStyle(
     "SectionHeading", parent=_styles["Heading2"], textColor=DARK, fontSize=12.5,
     spaceBefore=16, spaceAfter=6, fontName="Helvetica-Bold",
 ))
 _styles.add(ParagraphStyle(
-    "Body", parent=_styles["Normal"], fontSize=10, leading=15,
+    "Body", parent=_styles["Normal"], fontName="Helvetica", fontSize=10, leading=15, wordWrap="CJK",
 ))
 _styles.add(ParagraphStyle(
     "BodyMuted", parent=_styles["Normal"], fontSize=9.5, leading=14,
@@ -79,7 +79,7 @@ _styles.add(ParagraphStyle(
 ))
 _styles.add(ParagraphStyle(
     "BadgeText", parent=_styles["Normal"], fontSize=9.5, textColor=WHITE,
-    fontName="Helvetica-Bold", alignment=1, leading=12,
+    fontName="Helvetica-Bold", alignment=1, leading=12, wordWrap="CJK",
 ))
 
 
@@ -136,7 +136,7 @@ def _table(rows: list[list[Any]], widths: list[float], header: bool = True) -> T
 def _badge(text: str, color: colors.Color) -> Table:
     """Small pill-style colored label, e.g. for risk classification."""
     tbl = Table([[Paragraph(escape(text.replace("_", " ").upper()), _styles["BadgeText"])]],
-                colWidths=[2.3 * inch])
+                colWidths=[2.15 * inch])
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), color),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
@@ -318,7 +318,7 @@ def generate_incident_pdf(incident: Incident) -> str:
             Paragraph("Investigation Report", _styles["ReportTitle"]),
             _badge(classification if classification != MISSING else "unclassified", badge_color),
         ]],
-        colWidths=[4.4 * inch, 2.4 * inch],
+        colWidths=[4.75 * inch, 2.15 * inch],
     )
     title_row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -546,6 +546,18 @@ def generate_incident_pdf(incident: Incident) -> str:
 
     # ---- 9. Governance ------------------------------------------------------------
     _section(story, 9, "Governance")
+    governance_links = analysis.get("governance_links") or []
+    if governance_links:
+        story.append(_paragraph("Uploaded policy and regulatory controls", "Meta"))
+        story.append(_table([["Source", "Control / requirement", "Relationship", "Review"]] + [
+            [
+                f"{item.get('document_name') or 'Governance document'} v{item.get('document_version') or ''}",
+                f"{item.get('control_reference') or 'Control'} · {item.get('control_title') or ''} {item.get('control_text') or item.get('match_reason') or ''}",
+                item.get("relationship_type") or "mapped_to",
+                item.get("validation_status") or "candidate",
+            ] for item in governance_links
+        ], [1.65 * inch, 2.75 * inch, 0.85 * inch, 0.95 * inch]))
+        story.append(Spacer(1, 6))
     flags = [flag.strip() for flag in (incident.governance_flags or "").split(",") if flag.strip()]
     story.append(_table([
         ["Governance flags", "\n".join(f"- {flag}" for flag in flags) if flags else "None"],

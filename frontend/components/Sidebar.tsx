@@ -10,6 +10,7 @@ const links = [
   { href: "/dashboard/analytics", label: "Analytics" },
   { href: "/dashboard/copilot", label: "Copilot" },
   { href: "/dashboard/reports", label: "Reports" },
+  { href: "/dashboard/governance", label: "Governance" },
 ];
 
 export function Sidebar() {

@@ -19,15 +19,24 @@ export default function AnalyticsPage() {
     const requestedTenantId = new URLSearchParams(window.location.search).get("tenant_id");
     const tenantId = session?.role === "owner" ? requestedTenantId : getActiveTenantId() || session?.tenant_id;
     const scope = scopedQuery(tenantId);
-    Promise.all([
+    Promise.allSettled([
       apiFetch<PrecisionRecall>(`/analytics/precision-recall${scope}`),
       apiFetch<DriftResult>(`/analytics/drift${scope}`),
       apiFetch<Record<string, { positive_rate: number; count: number }>>(`/analytics/fairness${scope}`),
       apiFetch<{ compliance_status: string; critical_rate: number }>(`/analytics/governance${scope}`),
       apiFetch<AnalyticsSummary>(`/analytics/summary${scope}`),
-    ]).then(([pr, drift, fairness, governance, summary]) => {
-      setPr(pr); setDrift(drift); setFairness(fairness); setGovernance(governance); setSummary(summary);
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load analytics."));
+    ]).then((results) => {
+      const [pr, drift, fairness, governance, summary] = results;
+      if (pr.status === "fulfilled") setPr(pr.value);
+      if (drift.status === "fulfilled") setDrift(drift.value);
+      if (fairness.status === "fulfilled") setFairness(fairness.value);
+      if (governance.status === "fulfilled") setGovernance(governance.value);
+      if (summary.status === "fulfilled") setSummary(summary.value);
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") {
+        setError(failed.reason instanceof Error ? failed.reason.message : "Unable to load some analytics.");
+      }
+    });
   }, []);
 
   return (
@@ -49,7 +58,7 @@ export default function AnalyticsPage() {
 
       <div className="card mb-4">
         <p className="text-sm font-medium mb-3">Confusion matrix breakdown</p>
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveContainer width="100%" height={260}>
           <BarChart
             data={[
               { name: "True positive", count: pr?.true_positives ?? 0 },
@@ -59,7 +68,7 @@ export default function AnalyticsPage() {
             ]}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="name" tick={{ fill: "#CBD5E1", fontSize: 11 }} />
+            <XAxis dataKey="name" interval={0} angle={-12} textAnchor="end" height={48} tick={{ fill: "#CBD5E1", fontSize: 11 }} />
             <YAxis tick={{ fill: "#CBD5E1", fontSize: 11 }} />
             <Tooltip contentStyle={{ background: "#1E293B", border: "1px solid #334155" }} />
             <Bar dataKey="count" fill="#F59E0B" radius={[4, 4, 0, 0]} />
