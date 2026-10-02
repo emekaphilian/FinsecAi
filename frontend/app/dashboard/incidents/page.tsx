@@ -217,7 +217,7 @@ async function handleAnalyzeAll() {
                       {inc.id.slice(0, 8)}
                     </Link>
                   </td>
-                  <td className="py-2 pr-4">{inc.user_id}</td>
+                  <td className="py-2 pr-4"><Link href={`/dashboard/incidents/${inc.id}?profile=1`} className="text-gold hover:underline">{inc.user_id}</Link></td>
                   <td className="py-2 pr-4">${inc.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                   <td className="py-2 pr-4">{inc.transaction_type}</td>
                   <td className="py-2 pr-4">

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -49,6 +49,7 @@ from app.services.dataset_provenance import (
     DEMO, USER_TEST, TENANT as TENANT_DATASET, SHARED,
     filter_to_active_source,
 )
+from app.services.transaction_history import build_transaction_history
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
@@ -268,6 +269,7 @@ async def analyze_batch(
             incident,
             evidence_override=[],
             allow_external_enrichment=False,
+            include_historical_analysis=False,
         )
         for key, value in result.items():
             setattr(incident, key, value)
@@ -440,11 +442,24 @@ def _validate_row(row: pd.Series, scores_supplied: bool) -> tuple[dict | None, s
     if not math.isfinite(amount) or amount < 0 or amount > MAX_REASONABLE_AMOUNT:
         return None, "amount is not within the accepted range"
 
+    transaction_time = row.get("transaction_time")
+    if transaction_time is not None and not pd.isna(transaction_time):
+        try:
+            # Store a UTC-normalized naive datetime because the current schema
+            # uses SQLAlchemy's timezone-naive DateTime across SQLite/Postgres.
+            parsed_time = pd.to_datetime(transaction_time, utc=True, errors="raise")
+            transaction_time = parsed_time.to_pydatetime().replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError):
+            return None, "transaction_time could not be parsed"
+    else:
+        transaction_time = None
+
     cleaned = {
         "user_id": user_id,
         "amount": amount,
         "transaction_type": str(row.get("transaction_type", "TRANSFER"))[:MAX_STRING_FIELD_LEN],
         "device_id": str(row.get("device_id", ""))[:MAX_STRING_FIELD_LEN],
+        "transaction_time": transaction_time,
     }
     if scores_supplied:
         try:
@@ -551,13 +566,9 @@ async def upload_incidents(
     db.add(dataset)
     db.flush()
     transaction_history = TransactionHistory(db, target_tenant_id) if risk_model else None
-    existing = {
-        (i.user_id, round(i.amount, 2), round(i.risk_score, 3), round(i.anomaly_score, 3))
-        for i in db.query(Incident).filter(
-            Incident.tenant_id == target_tenant_id,
-            Incident.dataset_source == dataset_source,
-        ).all()
-    }
+    # Each upload is a separate dataset version.  Do not allow transactions
+    # from an older version to suppress records in the newly active version.
+    existing: set[tuple[str, float, float, float, datetime | None]] = set()
 
     created, skipped, invalid = 0, 0, 0
     created_incidents: list[Incident] = []
@@ -585,7 +596,13 @@ async def upload_incidents(
             risk_score = model_prediction.risk_score
             anomaly_score = model_prediction.anomaly_score
 
-        key = (user_id, round(amount, 2), round(risk_score, 3), round(anomaly_score, 3))
+        key = (
+            user_id,
+            round(amount, 2),
+            round(risk_score, 3),
+            round(anomaly_score, 3),
+            cleaned["transaction_time"],
+        )
         if key in existing:
             skipped += 1
             continue
@@ -598,6 +615,7 @@ async def upload_incidents(
             anomaly_score=anomaly_score,
             transaction_type=transaction_type,
             device_id=device_id,
+            created_at=cleaned["transaction_time"] or datetime.utcnow(),
             raw_payload=row.get("_raw_row") or {},
             dataset_source=dataset_source,
             dataset_id=dataset_id,
@@ -675,6 +693,20 @@ async def analyze_incident(
     db.commit()
     db.refresh(incident)
     return incident
+
+
+@router.get("/{incident_id}/history")
+def incident_history(
+    incident_id: str,
+    lookback_days: int = Query(default=90, ge=1, le=365),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission(INCIDENTS_READ)),
+):
+    """Return same-user transactions and a reproducible historical baseline."""
+    incident = _incident_for_active_workspace(db, incident_id, user)
+    if incident is None:
+        raise HTTPException(404, "Incident not found")
+    return build_transaction_history(db, incident, lookback_days=lookback_days)
 
 
 @router.post("/{incident_id}/authoritative-label")

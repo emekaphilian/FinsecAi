@@ -31,6 +31,7 @@ from app.services.evidence_retrieval import retrieve_relevant_evidence, semantic
 from app.services.investigation_context import build_investigation_context, build_investigation_query
 from app.services.investigation_validator import validate_investigation
 from app.services.dataset_provenance import incident_provenance
+from app.services.transaction_history import build_transaction_history
 from app.schemas.investigation import (
     AnomalyFinding,
     ConfidenceFactor,
@@ -640,6 +641,7 @@ async def analyze(
     *,
     evidence_override: list[dict[str, Any]] | None = None,
     allow_external_enrichment: bool = True,
+    include_historical_analysis: bool = True,
 ) -> dict[str, Any]:
     """Analyze one incident and return a JSON-friendly result.
 
@@ -652,6 +654,11 @@ async def analyze(
         evidence_override
         if evidence_override is not None
         else retrieve_evidence(db, tenant_id, incident)
+    )
+    transaction_history = (
+        build_transaction_history(db, incident)
+        if include_historical_analysis
+        else None
     )
 
     evidence_coverage = min(
@@ -724,6 +731,7 @@ async def analyze(
                 tenant_id,
                 incident,
                 safe_evidence,
+                historical_analysis=transaction_history,
             )
 
             providers = get_llm_providers()
@@ -1026,6 +1034,7 @@ async def analyze(
 
     analysis_json.update(
         {
+            "historical_analysis": transaction_history,
             "data_provenance": incident_provenance(
                 incident,
                 db.query(Tenant.name).filter(Tenant.id == tenant_id).scalar(),

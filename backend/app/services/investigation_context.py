@@ -120,7 +120,11 @@ def build_investigation_query(incident: Incident, audit: MLPredictionAudit | Non
 
 
 def build_investigation_context(
-    db: Session, tenant_id: str, incident: Incident, evidence: list[dict[str, Any]]
+    db: Session,
+    tenant_id: str,
+    incident: Incident,
+    evidence: list[dict[str, Any]],
+    historical_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     audit = (
         db.query(MLPredictionAudit)
@@ -151,4 +155,17 @@ def build_investigation_context(
         "authoritative_labels": [{"label": item.label, "source": item.label_source} for item in labels],
         "feedback": [{"label": item.label, "created_at": item.created_at.isoformat()} for item in feedback],
         "retrieved_evidence": evidence,
+        "historical_analysis": (
+            {
+                "lookback_days": historical_analysis["lookback_days"],
+                "historical_transaction_count": historical_analysis["historical_transaction_count"],
+                "truncated": historical_analysis["truncated"],
+                "baseline": historical_analysis["baseline"],
+                "profile": historical_analysis["profile"],
+                "recent_transactions": historical_analysis["transactions"][-10:],
+                "findings": historical_analysis["findings"],
+            }
+            if historical_analysis is not None
+            else None
+        ),
     }

@@ -418,6 +418,52 @@ def generate_incident_pdf(incident: Incident) -> str:
         ])
         story.append(_table(source_rows, [2.0 * inch, 4.2 * inch]))
 
+    historical = analysis.get("historical_analysis") or {}
+    if historical:
+        baseline = historical.get("baseline") or {}
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Historical Transaction Evidence", _styles["SectionHeading"]))
+        story.append(_paragraph(
+            f"Dataset-scoped history for the same user over {historical.get('lookback_days', 90)} days. "
+            f"{historical.get('historical_transaction_count', 0)} prior transaction(s) were available. "
+            "This comparison is behavioral context, not a fraud determination.",
+            "Meta",
+        ))
+        story.append(_table([
+            ["Comparison", "Historical baseline", "Current incident"],
+            [
+                f"{baseline.get('transaction_type') or 'Transaction'} amount",
+                (f"{payload.get('currency', '')} {baseline['average_amount']:,.2f}".strip()
+                 if isinstance(baseline.get("average_amount"), (int, float)) else "Insufficient history"),
+                (f"{payload.get('currency', '')} {baseline.get('current_amount', incident.amount):,.2f}".strip()),
+            ],
+            ["Comparable prior transactions", baseline.get("comparable_transaction_count", 0), 1],
+            ["Typical origins", ", ".join(item.get("location", "") for item in baseline.get("typical_locations", [])) or "Not supplied", baseline.get("current_location") or "Not supplied"],
+            ["Prior channel counts", ", ".join(f"{key}: {value}" for key, value in baseline.get("channel_counts", {}).items()) or "Not supplied", baseline.get("current_channel") or "Not supplied"],
+            ["Prior 24-hour related transactions", baseline.get("velocity_24h", 0), "—"],
+        ], [2.0 * inch, 2.2 * inch, 2.0 * inch]))
+        story.append(Spacer(1, 6))
+        history_rows = historical.get("transactions") or []
+        if history_rows:
+            story.append(_paragraph("Supporting transaction records (up to 30 most recent)", "Meta"))
+            selected_rows = history_rows[-30:]
+            story.append(_table([["Transaction", "Timestamp", "Amount", "Type / channel", "Origin", "Risk / anomaly"]] + [
+                [
+                    item.get("transaction_id"),
+                    item.get("timestamp"),
+                    f"{item.get('currency') or payload.get('currency') or ''} {item.get('amount', 0):,.2f}".strip(),
+                    " / ".join(str(value) for value in (item.get("transaction_type"), item.get("channel")) if value),
+                    item.get("location") or "Not supplied",
+                    f"{item.get('risk_score', 0):.2f} / {item.get('anomaly_score', 0):.2f}",
+                ]
+                for item in selected_rows
+            ], [1.0 * inch, 1.25 * inch, 1.0 * inch, 1.15 * inch, 1.15 * inch, 0.65 * inch]))
+            if historical.get("truncated") or len(history_rows) > len(selected_rows):
+                story.append(_paragraph(
+                    "The PDF shows a bounded excerpt. The API response indicates whether the history set was truncated.",
+                    "Meta",
+                ))
+
     # ---- 5. Anomaly Findings ------------------------------------------------
     _section(story, 5, "Anomaly Findings")
     findings = analysis.get("findings") or []

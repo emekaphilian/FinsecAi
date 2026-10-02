@@ -30,6 +30,11 @@ export interface Incident {
   risk_score: number;
   anomaly_score: number;
   created_at: string;
+  dataset_source?: string | null;
+  dataset_id?: string | null;
+  dataset_name?: string | null;
+  dataset_version?: string | null;
+  dataset_record_count?: number | null;
   confidence?: number | null;
   evidence_coverage?: number | null;
   explanation?: string | null;
