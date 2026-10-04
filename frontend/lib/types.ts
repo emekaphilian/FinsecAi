@@ -66,6 +66,12 @@ export interface PrecisionRecall {
   false_positives: number;
   false_negatives?: number;
   true_negatives?: number;
+  evaluation_mode?: "validated" | "synthetic";
+  ground_truth_source?: "authoritative_labels" | "synthetic_seeded";
+  evaluated_count?: number;
+  total_incidents?: number;
+  label_coverage?: number;
+  evaluation_note?: string;
 }
 
 export interface DriftResult {

@@ -44,9 +44,39 @@ export default function AnalyticsPage() {
       <h1 className="text-2xl font-semibold mb-2">Analytics</h1>
       <p className="text-sm text-text-secondary mb-6">
         Computed at a 0.5 risk threshold over {summary?.total_incidents ?? "—"} incidents.
-        Ground-truth labels are synthetic pending analyst-confirmed outcomes — treat these as
-        pipeline-health checks, not production accuracy.
       </p>
+      <div className="mb-5 rounded-lg border border-border p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold">Evaluation status</span>
+          <span
+            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+              pr?.evaluation_mode === "validated"
+                ? "bg-green-100 text-green-800"
+                : pr?.evaluation_mode === "synthetic"
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-secondary text-text-secondary"
+            }`}
+          >
+            {pr?.evaluation_mode === "validated"
+              ? "VALIDATED MODEL PERFORMANCE"
+              : pr?.evaluation_mode === "synthetic"
+                ? "SYNTHETIC EVALUATION — PIPELINE HEALTH ONLY"
+                : "EVALUATION UNAVAILABLE"}
+          </span>
+        </div>
+        <p className="mt-2 text-sm text-text-secondary">
+          {pr?.evaluation_note ??
+            "Evaluation status is unavailable until the analytics endpoint responds."}
+        </p>
+        {pr && (
+          <p className="mt-2 text-xs text-text-secondary">
+            Evaluated {pr.evaluated_count} of {pr.total_incidents} incidents
+            {pr.evaluation_mode === "validated"
+              ? ` (${((pr.label_coverage ?? 0) * 100).toFixed(1)}% labelled)`
+              : ""}
+          </p>
+        )}
+      </div>
       {error && <p role="alert" className="mb-4 text-sm text-danger">{error}</p>}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">

@@ -88,6 +88,10 @@ its cache.
    services to Railway, Render, or Fly.io. Set the same env vars as `.env.example`.
 3. Point the frontend's `NEXT_PUBLIC_API_URL` at the deployed backend and redeploy.
 
+The backend CORS allowlist includes `https://finsec-ai.vercel.app` even when
+`CORS_ORIGINS` is set by the hosting provider. Add any additional frontend
+custom domains to `CORS_ORIGINS` in the backend environment.
+
 ## Project layout
 
 ```

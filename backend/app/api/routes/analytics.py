@@ -13,7 +13,16 @@ from app.core.authorization import (
     require_permission,
     resolve_tenant_context,
 )
-from app.db.models import Incident, ReportJob, Tenant, TenantProvenance, TenantStatus, TenantType, User
+from app.db.models import (
+    AuthoritativeLabel,
+    Incident,
+    ReportJob,
+    Tenant,
+    TenantProvenance,
+    TenantStatus,
+    TenantType,
+    User,
+)
 from app.db.session import get_db
 from app.schemas import AnalyticsSummary, EnterpriseSummary
 from app.services import evaluation_service
@@ -134,11 +143,78 @@ def precision_recall(
     user: User = Depends(get_current_user),
 ):
     incidents = _tenant_incidents(db, user, tenant_id, max_rows=10_000)
-    # NOTE: ground truth is synthetic pending real analyst-labeled outcomes — flagged in the UI.
+
+    incident_ids = [incident.id for incident in incidents]
+    tenant_ids = {incident.tenant_id for incident in incidents if incident.tenant_id}
+    labels = (
+        db.query(AuthoritativeLabel)
+        .filter(
+            AuthoritativeLabel.incident_id.in_(incident_ids),
+            AuthoritativeLabel.tenant_id.in_(tenant_ids),
+            AuthoritativeLabel.label.in_(
+                ["confirmed_fraud", "confirmed_legitimate"]
+            ),
+        )
+        .all()
+        if incident_ids and tenant_ids
+        else []
+    )
+    labels_by_incident = {label.incident_id: label for label in labels}
+    labelled_incidents = [
+        incident for incident in incidents if incident.id in labels_by_incident
+    ]
+
+    if labelled_incidents:
+        y_true = [
+            1 if labels_by_incident[incident.id].label == "confirmed_fraud" else 0
+            for incident in labelled_incidents
+        ]
+        y_pred = evaluation_service.predict_labels(
+            [incident.risk_score for incident in labelled_incidents],
+            threshold,
+        )
+        metrics = evaluation_service.evaluate_classification(y_true, y_pred)
+        metrics.update(
+            {
+                "evaluation_mode": "validated",
+                "ground_truth_source": "authoritative_labels",
+                "evaluated_count": len(labelled_incidents),
+                "total_incidents": len(incidents),
+                "label_coverage": round(len(labelled_incidents) / len(incidents), 3)
+                if incidents
+                else 0.0,
+                "evaluation_note": (
+                    "Validated model performance using authoritative incident "
+                    "outcomes. Unlabelled incidents are excluded."
+                ),
+            }
+        )
+        return metrics
+
+    # No authoritative outcomes exist yet. Preserve the deterministic
+    # synthetic evaluation as a pipeline-health indicator, not accuracy.
     random.seed(42)
     y_true = [random.randint(0, 1) for _ in incidents]
-    y_pred = evaluation_service.predict_labels([i.risk_score for i in incidents], threshold)
-    return evaluation_service.evaluate_classification(y_true, y_pred)
+    y_pred = evaluation_service.predict_labels(
+        [incident.risk_score for incident in incidents],
+        threshold,
+    )
+    metrics = evaluation_service.evaluate_classification(y_true, y_pred)
+    metrics.update(
+        {
+            "evaluation_mode": "synthetic",
+            "ground_truth_source": "synthetic_seeded",
+            "evaluated_count": len(incidents),
+            "total_incidents": len(incidents),
+            "label_coverage": 0.0,
+            "evaluation_note": (
+                "Synthetic ground truth is used because no authoritative "
+                "incident outcomes are available. Treat these metrics as "
+                "pipeline-health checks, not validated production accuracy."
+            ),
+        }
+    )
+    return metrics
 
 
 @router.get("/fairness")

@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Use absolute paths so both launch modes load the same project configuration.
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_ROOT.parent
+PRODUCTION_FRONTEND_ORIGIN = "https://finsec-ai.vercel.app"
 
 
 class Settings(BaseSettings):
@@ -34,9 +35,11 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     # Comma-separated list of allowed frontend origins.
-    # Override this in .env for each environment.
+    # Environment-specific origins can be added in .env; the canonical
+    # production frontend remains allowed even when that setting is overridden.
     cors_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001"
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,"
+        f"{PRODUCTION_FRONTEND_ORIGIN}"
     )
 
     llm_provider: str = "cohere"
@@ -70,7 +73,10 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        if PRODUCTION_FRONTEND_ORIGIN not in origins:
+            origins.append(PRODUCTION_FRONTEND_ORIGIN)
+        return origins
 
     @property
     def is_production(self) -> bool:
