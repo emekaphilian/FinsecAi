@@ -8,6 +8,7 @@ export interface InvestigationValidation {
 
 export interface InvestigationAnalysisJson {
   intelligence_status?: string;
+  data_provenance?: Record<string, unknown>;
   llm_provider?: string;
   llm_provider_error?: string;
   llm_model?: string;
