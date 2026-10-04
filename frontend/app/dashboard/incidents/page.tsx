@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { apiFetch, downloadReport, getSession, scopedQuery } from "@/lib/api";
 import { Incident } from "@/lib/types";
 import { RiskBadge } from "@/components/RiskBadge";
 
 export default function IncidentsPage() {
+  const searchParams = useSearchParams();
   const canReset = ["admin", "owner"].includes(getSession()?.role || "");
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -17,7 +19,16 @@ export default function IncidentsPage() {
   const [dataMode, setDataMode] = useState<"demo_default" | "user_data" | null>(null);
 
   function selectedTenantId() {
-    return new URLSearchParams(window.location.search).get("tenant_id");
+    return searchParams.get("tenant_id");
+  }
+
+  function incidentHref(incidentId: string, profile = false) {
+    const tenantId = selectedTenantId();
+    const params = new URLSearchParams();
+    if (profile) params.set("profile", "1");
+    if (tenantId) params.set("tenant_id", tenantId);
+    const query = params.toString();
+    return `/dashboard/incidents/${encodeURIComponent(incidentId)}${query ? `?${query}` : ""}`;
   }
 
   function load() {
@@ -81,7 +92,7 @@ export default function IncidentsPage() {
     const message =
       error instanceof Error ? error.message : "Upload failed.";
 
-    setMessage(`Upload failed ? ${message}`);
+    setMessage(`Upload failed: ${message}`);
   } finally {
     setUploading(false);
     e.target.value = "";
@@ -176,7 +187,7 @@ async function handleAnalyzeAll() {
         <p className="text-xs text-text-secondary mb-4">
           Supported formats: CSV, TXT, XLS, XLSX. Required columns: user_id, amount, risk_score, anomaly_score. Direct database and cloud-drive connectors are on the roadmap — not available yet.
         </p>
-        {message && <p className="text-sm text-success">{message}</p>}
+        {message && <p role="status" className={`text-sm ${message.startsWith("Upload failed:") || message.startsWith("Analysis failed") ? "text-danger" : "text-success"}`}>{message}</p>}
       </div>
 
       {isDemoTenant && dataMode === "user_data" && (
@@ -213,11 +224,11 @@ async function handleAnalyzeAll() {
               {incidents.map((inc) => (
                 <tr key={inc.id} className="border-b border-border/50 hover:bg-primary/40">
                   <td className="py-2 pr-4">
-                    <Link href={`/dashboard/incidents/${inc.id}`} className="text-gold hover:underline">
+                    <Link href={incidentHref(inc.id)} className="text-gold hover:underline">
                       {inc.id.slice(0, 8)}
                     </Link>
                   </td>
-                  <td className="py-2 pr-4"><Link href={`/dashboard/incidents/${inc.id}?profile=1`} className="text-gold hover:underline">{inc.user_id}</Link></td>
+                  <td className="py-2 pr-4"><Link href={incidentHref(inc.id, true)} className="text-gold hover:underline">{inc.user_id}</Link></td>
                   <td className="py-2 pr-4">${inc.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                   <td className="py-2 pr-4">{inc.transaction_type}</td>
                   <td className="py-2 pr-4">

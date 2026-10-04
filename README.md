@@ -65,7 +65,6 @@ password before entering their tenant console.
 
 - Use the VS Code tasks for Python and frontend setup.
 - Run the backend and frontend through the debugger for the fastest edit loop.
-- Keep older Streamlit-era code in the `legacy/` directory for reference while the new stack is being validated.
 
 ### Refreshing the Docker frontend
 
@@ -100,5 +99,4 @@ backend/app/
 frontend/app/
   login/                    sign-in page
   dashboard/                overview, incidents, incident deep-dive, analytics, copilot
-legacy/                      archived Streamlit-era code
 ```
